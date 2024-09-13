@@ -170,6 +170,7 @@ function Node:backward(dz_real, dz_imag)
     self.grad.real = self.grad.real + dz_real
     if self.grad_fn then
         self.grad_fn(dz_real)
+        self.grad_fn = nil
     end
 end
 

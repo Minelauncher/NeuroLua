@@ -2,6 +2,9 @@
 
 -- Box-Muller 변환을 사용하여 하나의 표준 정규분포 난수 생성(mean==평균, stddev==표준편차)
 function GenerateStandardNormal(mean, stddev)
+    if stddev < 0 then
+        error("stddev's value is under zero")
+    end
     local u1 = math.random()
     local u2 = math.random()
 
@@ -9,6 +12,10 @@ function GenerateStandardNormal(mean, stddev)
     local z1 = math.sqrt(-2.0 * math.log(u1)) * math.sin(2.0 * math.pi * u2) -- 필요 없다면 생략
 
     return mean + z0 * stddev
+end
+
+function Gaussian_Distribution_Probability_Density(mean, stddev, value)
+    return (1 / math.sqrt(2*math.pi * stddev^2)) * math.exp(1)^(-((value - mean)/(2 * stddev^2)))
 end
 
 -- 테이블 요소 곱
@@ -50,4 +57,11 @@ function rgb(r, g, b)
     return string.format("\27[38;2;%d;%d;%dm", r, g, b)
 end
 local reset = "\27[0m"
+
+function Sleep(ms)
+    local t = os.clock()
+    ms = ms / 1000
+    while os.clock() - t <= ms do
+    end
+end
 --#endregion

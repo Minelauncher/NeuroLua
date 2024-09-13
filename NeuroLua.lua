@@ -105,8 +105,8 @@ function Convolution:backPropagation(learningRate)
         local dL_dF = self.filter[i]:grad()
 
         local b1, b2 , E = 0.9, 0.999, 1e-8
-        self.Momentum_dL_dF[i] = ((b1 * self.Momentum_dL_dF[i]) + ((1-b1) * dL_dF))-- Momentum's dL_dF
-        self.RMSprop_dL_dF[i] = ((b2 * self.RMSprop_dL_dF[i]) + ((1-b2) * dL_dF * dL_dF))-- RMSprop's dL_dF
+        self.Momentum_dL_dF[i] = Tensor.deepcopy((b1 * self.Momentum_dL_dF[i]) + ((1-b1) * dL_dF))-- Momentum's dL_dF
+        self.RMSprop_dL_dF[i] = Tensor.deepcopy((b2 * self.RMSprop_dL_dF[i]) + ((1-b2) * dL_dF * dL_dF))-- RMSprop's dL_dF
 
         self.RMSprop_dL_dF[i] = Tensor.apply(self.RMSprop_dL_dF[i], function(x) return x^(-1/2) + E end)
 
@@ -248,7 +248,7 @@ function Pooling:summary()
 end
 
 
-function Dense.new(inputShape, layerShape, activationFunction)-- 매개변수 table, table, number, function
+function Dense.new(inputShape, layerShape, activationFunction, normalized)-- 매개변수 table, table, number, function
     local self = setmetatable({}, Dense)
     self.inputShape = inputShape -- 레이어 입력 형태 : 테이블
     self.layerShape = layerShape -- 레이어 형태 : 테이블 (사실상 출력 모양)
@@ -267,7 +267,7 @@ function Dense.new(inputShape, layerShape, activationFunction)-- 매개변수 ta
     self.Momentum_dL_dG = 0
     self.RMSprop_dL_dG = 0
     
-    self.beta = Tensor.emptyTensor({1, self.len_layerShape}):fill(1)
+    self.beta = Tensor.emptyTensor({1, self.len_layerShape}):fill(0)
     self.Momentum_dL_dB = 0
     self.RMSprop_dL_dB = 0
 
@@ -283,6 +283,9 @@ function Dense.new(inputShape, layerShape, activationFunction)-- 매개변수 ta
         Tanh = function(x)
             return ( math.exp(1)^(2*x) - 1 ) / (math.exp(1)^(2*x) + 1)
         end,
+        Sigmoid = function(x)
+            return ( 1 ) / (1 + math.exp(1)^(-0.1 * x))
+        end,
         SoftMax = function(x)
             return Tensor.SoftMax(x) -- Tensor
         end,
@@ -291,11 +294,16 @@ function Dense.new(inputShape, layerShape, activationFunction)-- 매개변수 ta
         end
     }
 
+    if normalized == nil then
+        normalized = true
+    end
+    self.layerNormalized = normalized
+
     return self
 end
 setmetatable(Dense, {
-    __call = function(_, inputShape, layerShape, activationFunction)
-        return Dense.new(inputShape, layerShape, activationFunction)
+    __call = function(_, inputShape, layerShape, activationFunction, normalized)
+        return Dense.new(inputShape, layerShape, activationFunction, normalized)
     end
 })
 
@@ -328,21 +336,23 @@ end
 function Dense:forwardPropagation(inputTensor)
 
     inputTensor = inputTensor:reshape(1, self.len_inputShape) -- 행렬 연산을 위해 형태 조정 (행 벡터 형태로 만들어버림)
-    --inputTensor = inputTensor + (math.random() * 2e-8 - 1e-8)-- 0 값을 방지하기 위한 노이즈
+    inputTensor = Tensor.apply(inputTensor, function(x) return x + (math.random() * 2e-8 - 1e-8) end)
 
+    local gx_b
     local In_dot_Wt = Tensor.dot(inputTensor, self.weights) -- Tensor 입력값과 가중치 행렬곱
---
-    -- 레이어 정규화
-    local E = 1e-8
-    local tempTensor = Tensor.deepcopy(In_dot_Wt) -- Tensor 평균과 표준편차 계산시에는 영향이 없어야 하므로 임시 복제
-        local average = (tempTensor):sum() / #tempTensor -- Node
-        local stdDEV = ( ( Tensor.apply(tempTensor, function(x) return (x - average)^2 end) ):sum() )^(1/2)-- Node
-        local Normalized = Tensor.apply(In_dot_Wt, function(x) return (x - average) / (stdDEV + E) end) -- Tensor
+    if self.layerNormalized == true then
+        -- 레이어 정규화
+        local E = 1e-8
+        local tempTensor = Tensor.deepcopy(In_dot_Wt) -- Tensor 평균과 표준편차 계산시에는 영향이 없어야 하므로 임시 복제
+            local average = (tempTensor):sum() / #tempTensor -- Node
+            local stdDEV = ( ( Tensor.apply(tempTensor, function(x) return (x - average)^2 end) ):sum() )^(1/2)-- Node
+            local Normalized = Tensor.apply(In_dot_Wt, function(x) return (x - average) / (stdDEV + E) end) -- Tensor
 
-        --레이어 정규화 레이어 별로 수행하고 감마 베타 적용하여 테이블에 삽입
-        local gx_b = self.gamma * Normalized + self.beta -- Tensor
---]]
-    --local gx_b = In_dot_Wt
+            --레이어 정규화 레이어 별로 수행하고 감마 베타 적용하여 테이블에 삽입
+            gx_b = self.gamma * Normalized + self.beta -- Tensor
+    else
+        gx_b = In_dot_Wt + self.beta
+    end
     -- 활성화 함수 적용
     local output = Tensor.apply(gx_b, self.activation[self.activationFunction])
 
@@ -351,17 +361,17 @@ end
 
 function Dense:backPropagation(learningRate)
     -- ADAM 옵티마이저
-    local dL_dW = self.weights:grad()
-    local dL_dG = self.gamma:grad()
-    local dL_dB = self.beta:grad()
+    local dL_dW = (self.weights:grad())
+    local dL_dG = (self.gamma:grad())
+    local dL_dB = (self.beta:grad())
 
-    local b1, b2 , E = 0.9, 0.999, 1e-8
-    self.Momentum_dL_dW = ((b1 * self.Momentum_dL_dW) + ((1-b1) * dL_dW))-- Momentum's dL_dW
-    self.RMSprop_dL_dW = ((b2 * self.RMSprop_dL_dW) + ((1-b2) * dL_dW * dL_dW))-- RMSprop's dL_dW
-    self.Momentum_dL_dG = ((b1 * self.Momentum_dL_dG) + ((1-b1) * dL_dG))-- Momentum's dL_dG
-    self.RMSprop_dL_dG = ((b2 * self.RMSprop_dL_dG) + ((1-b2) * dL_dG * dL_dG))-- RMSprop's dL_dG
-    self.Momentum_dL_dB = ((b1 * self.Momentum_dL_dB) + ((1-b1) * dL_dB))-- Momentum's dL_dB
-    self.RMSprop_dL_dB = ((b2 * self.RMSprop_dL_dB) + ((1-b2) * dL_dB * dL_dB))-- RMSprop's dL_dB
+    local b1, b2 , E = 0.9, 0.999, 1e-8-- 얕은 복사로 인해 메모리 누수 발생 따라서 깊은 복사
+    self.Momentum_dL_dW = Tensor.deepcopy((b1 * self.Momentum_dL_dW) + ((1-b1) * dL_dW))-- Momentum's dL_dW
+    self.RMSprop_dL_dW = Tensor.deepcopy((b2 * self.RMSprop_dL_dW) + ((1-b2) * dL_dW * dL_dW))-- RMSprop's dL_dW
+    self.Momentum_dL_dG = Tensor.deepcopy((b1 * self.Momentum_dL_dG) + ((1-b1) * dL_dG))-- Momentum's dL_dG
+    self.RMSprop_dL_dG = Tensor.deepcopy((b2 * self.RMSprop_dL_dG) + ((1-b2) * dL_dG * dL_dG))-- RMSprop's dL_dG
+    self.Momentum_dL_dB = Tensor.deepcopy((b1 * self.Momentum_dL_dB) + ((1-b1) * dL_dB))-- Momentum's dL_dB
+    self.RMSprop_dL_dB = Tensor.deepcopy((b2 * self.RMSprop_dL_dB) + ((1-b2) * dL_dB * dL_dB))-- RMSprop's dL_dB
 
     -- Tensor 지수 연산
     self.RMSprop_dL_dW = Tensor.apply(self.RMSprop_dL_dW, function(x) return x^(-1/2) + E end)
@@ -372,14 +382,6 @@ function Dense:backPropagation(learningRate)
     self.weights = self.weights - learningRate * ((self.RMSprop_dL_dW)) * (self.Momentum_dL_dW)
     self.gamma = self.gamma - learningRate * ((self.RMSprop_dL_dG)) * (self.Momentum_dL_dG)
     self.beta = self.beta - learningRate * ((self.RMSprop_dL_dB)) * (self.Momentum_dL_dB)
-    self.weights = Tensor.deepcopy(self.weights)
-    self.gamma = Tensor.deepcopy(self.gamma)
-    self.beta = Tensor.deepcopy(self.beta)
-
-    -- 혹시 모를 기울기 초기화
-    self.weights:grad()
-    self.gamma:grad()
-    self.beta:grad()
 end
 
 
@@ -392,8 +394,8 @@ function Model.new(name)
 
     self.layer = {dense = {}, convolution = {}, pooling = {}}
     self.layer.dense = setmetatable(self.layer.dense, {
-        __call = function(_, inputShape, layerShape, activationFunction)-- Model.layer.dense() 식으로 호출
-            self.layers[#self.layers + 1] = Dense(inputShape, layerShape, activationFunction)-- 레이어를 생성하고 빈공간에 넣는다.
+        __call = function(_, inputShape, layerShape, activationFunction, normalized)-- Model.layer.dense() 식으로 호출
+            self.layers[#self.layers + 1] = Dense(inputShape, layerShape, activationFunction, normalized)-- 레이어를 생성하고 빈공간에 넣는다.
             print("Dense layer generated")
         end
     })
@@ -414,6 +416,9 @@ function Model.new(name)
     self.lossFunction = {
         MSE = function(targetTensor, outputTensor)
             return ( Tensor.apply((targetTensor - outputTensor), function(x) return x * x end) ):sum()-- Node
+        end,
+        Gradient = function(targetTensor, outputTensor)
+            return ( Tensor.apply((targetTensor * outputTensor), function(x) return x end) ):sum()-- Node
         end
     }
 
@@ -433,7 +438,8 @@ setmetatable(Model, {
 
 -- 모델 순전파
 function Model:forwardPropagation(inputTensor)
-    local output = Tensor.deepcopy(inputTensor)
+    --local output = Tensor.deepcopy(inputTensor)
+    local output = inputTensor
     for _, layer in ipairs(self.layers) do
         output = layer:forwardPropagation(output)
     end
@@ -453,9 +459,10 @@ function Model:learn(input, target, loss, learningRate)
     loss = loss or 'MSE'
     learningRate = learningRate or 0.1
 
-    local error = 0
-    local output = 0
+    local error = nil
+    local output = nil
     output = self:forwardPropagation(input)
+
     error = self.lossFunction[loss](target, output)
     error:backward()-- dL_d[] 꼴로 역전파
     
