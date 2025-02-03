@@ -1,18 +1,19 @@
-local Node = require("Node")
+Node = require("Node")
 
 Tensor = {}
-Tensor.__index = Tensor
+--Tensor.__index = Tensor
 
 -- Tensor 생성
 function Tensor.new(values)
     local self = setmetatable({}, Tensor)
-    self.values = nil--Tensor의 값
+    self.values = {}--Tensor의 값
+
     self.dimension = 0--Tensor의 차원
     self.size = {}--Tensor의 크기
     self.size = setmetatable(self.size, {
         __eq = function(a, b) -- 동등
-            if #a.size == #b.size then
-                for i = 1, #a.size do
+            if #a == #b then
+                for i = 1, #a do
                     if a[i] ~= b[i] then
                         return false
                     end
@@ -46,32 +47,53 @@ function Tensor.new(values)
     self.values = values
     return self
 end
+
+--#region Tensor 메타메소드 구현부
+
+-- Tensor.__call = function
+-- setmetatable(Tensor, Tensor) 와 동일
 Tensor = setmetatable(Tensor, {
     __call = function(_, values)
         return Tensor.new(values)
     end
 })
 
---#region Tensor 메타메소드 구현부
-
--- Tensor[][][] 식으로 values 내부의 값 호출가능
---[[
 Tensor.__index = function(self, index)
-    -- tensor[i1][i2][i3] 형태의 접근을 지원
-    local value = self.values[index]
-    if type(value) == "table" and getmetatable(value) ~= Node then
-        return setmetatable({values = value} , getmetatable(self))
-    elseif type(value) == "table" and getmetatable(value) == Node then
-        return value.value
+    -- 먼저 Tensor 클래스의 메서드(함수)가 있는지 확인
+    local value = rawget(Tensor, index)
+    if value then
+        return value -- 클래스 함수 반환 (예: reshape, dot 등)
+    end
+    -- 인덱스가 숫자인 경우, `values`에서 값을 가져옴
+    if type(index) == "number" then
+        local values = self.values[index]
+        if getmetatable(values) == Node then
+            return Tensor({values})
+        else
+            return Tensor(values)
+        end
+    end
+    -- 기본 __index 동작 수행
+    return rawget(self, index)
+end
+
+Tensor.__newindex = function(self, index, value)
+    -- 값이 Tensor 객체라면 내부 values를 저장
+    if type(index) == "number" then
+        if getmetatable(value) == Tensor then
+            self.values[index] = value.values -- Tensor 내부 값만 저장
+        elseif getmetatable(value) == Node then
+            self.values[index] = value -- Node 객체 직접 저장
+        elseif type(value) == "number" then
+            self.values[index] = Node(value) -- 일반 숫자는 노드로 변환
+        else
+            self.values[index] = value --  그대로 저장
+        end
     else
-        return Tensor -- 아무것도 아니면 Tensor.__index = Tensor
+        -- 기본 동작 수행 (Tensor 자체 속성을 변경할 경우)
+        rawset(self, index, value)
     end
 end
-
---Tensor.__newindex = function()
-end
---]]
-
 -- __tostring 메타메소드 구현 : Tensor 출력
 Tensor.__tostring = function(self)
     local str = "[Tensor]\n"
@@ -81,7 +103,7 @@ Tensor.__tostring = function(self)
                 tostring(v)  -- 하위 테이블을 재귀적으로 순회
                 str = str.."\n"
             else
-                str = str..string.format("%9.9s", v.value).." "
+                str = str..string.format("%9.18s", v.value).." "
             end
         end
     end
@@ -93,7 +115,8 @@ Tensor.__tostring = function(self)
     end
     return str
 end
--- __len 메타메소드 구현 : Tensor의 전체 원소 개수 
+
+-- __len 메타메소드 구현 : Tensor의 전체 원소 개수 5.1에 없음
 Tensor.__len = function(self)
     local length = 1
     for _, s in pairs(self.size) do
@@ -179,6 +202,32 @@ Tensor.__mul = function(t1, t2)
     local t3 = mul(t1.values, t2.values, t1.size, 1)
     return Tensor(t3)
 end
+
+-- __mul 메타메소드 구현 : Tensor의 요소 나눗셈(스칼라 나눗셈 가능)
+Tensor.__div = function(t1, t2)
+    if getmetatable(t1) ~= Tensor and getmetatable(t2) == Tensor then--m1이 스칼라고 m2가 텐서라면
+        t1 = Tensor.deepcopy(t2):fill(t1)
+    elseif getmetatable(t1) == Tensor and getmetatable(t2) ~= Tensor then--m2이 스칼라고 m1이 텐서라면
+        t2 = Tensor.deepcopy(t1):fill(t2)
+    end
+
+    local function mul(table1, table2, dimensions, depth)
+        local dim = dimensions[depth]
+        local subTable = {}
+        for i = 1, dim do
+            if depth < #dimensions then
+                -- 하위 차원으로 재귀적으로 테이블 생성
+                subTable[i] = mul(table1[i], table2[i], dimensions, depth + 1)
+            else
+                -- 테이블의 요소의 나눗셈을 할당
+                subTable[i] = table1[i] / table2[i]
+            end
+        end
+        return subTable
+    end
+    local t3 = mul(t1.values, t2.values, t1.size, 1)
+    return Tensor(t3)
+end
 --#endregion
 --#region Tensor 행렬 연산 구현부
 
@@ -223,6 +272,8 @@ function Tensor:transpose()
         transposed[i] = {}
         for j = 1, #self.values do
             transposed[i][j] = self.values[j][i]
+            -- 복소수 전치시 허수부 부호 변환
+            transposed[i][j].value.imag = transposed[i][j].value.imag * -1
         end
     end
     return Tensor(transposed)
@@ -309,142 +360,85 @@ function Tensor:inverse()
     end
 end
 
+-- N*N크기의 이산 푸리에 변환 행렬 생성(1차원 이산 푸리에 변환)
+function Tensor.DFT(N)
+    local matrixDFT = {}
+    local twoPi = 2*math.pi
+    for i = 1, N do
+        matrixDFT[i] = {}
+        for j = 1, N do
+            local real = math.cos((twoPi * ((i-1)*(j-1)/N)))
+            local imag = -math.sin((twoPi * ((i-1)*(j-1)/N)))
+            matrixDFT[i][j] = Node(real, imag)
+        end
+    end
+    return Tensor(matrixDFT)
+end
+
 --#endregion
 --#region Tensor 신경망 관련 기능 구현부
 
 -- Tensor 각 요소에 함수 적용
 function Tensor.apply(tensor, func)
-    local function apply(table, dimensions, depth)
+    local function applyIn(table, dimensions, depth)
         local dim = dimensions[depth]
         local subTable = {}
         for i = 1, dim do
             if depth < #dimensions then
                 -- 하위 차원으로 재귀적으로 테이블 생성
-                subTable[i] = apply(table[i], dimensions, depth + 1)
+                subTable[i] = applyIn(table[i], dimensions, depth + 1)
             else
                 subTable[i] = func(table[i])
             end
         end
         return subTable
     end
-    return Tensor(apply(tensor.values, tensor.size, 1))
+    return Tensor(applyIn(tensor.values, tensor.size, 1))
 end
 
--- Tensor에 padding을 하여 크기 성장
-function Tensor.padding(tensor, padding)
-    local flatTensor = tensor:reshape(1, #tensor).values[1]
-    local paddingTensorSize = {}
-    for i = 1, #tensor.size do
-       paddingTensorSize[i] = tensor.size[i] + 2 * padding
-    end
-    local index = {}-- 크기가 패딩텐서 차원과 같으면서 요소가 전부 1인 테이블
-    for i = 1, #paddingTensorSize do
-        index[i] = 1
-    end
-    local function create(dimensions, depth)
-        local dim = dimensions[depth]
-        local subTable = {}
-        for i = 1, dim do
-            if depth < #dimensions then
-                -- 하위 차원으로 재귀적으로 테이블 생성
-                subTable[i] = create(dimensions, depth + 1)
-            else
-                local function is_index_in_padding()-- 인덱스가 패딩 구간안에 존재하는지
-                    local bool = false
-                    for j = 1, #index do
-                        if index[j] <= padding or index[j] > dimensions[j] - padding then-- 인덱스가 패딩구간이면
-                            bool = true
-                        end
-                    end
-                    return bool
-                end
-                if is_index_in_padding() then
-                    subTable[i] = Node(0) -- 제로 패딩
-                else-- 인덱스가 패딩구간이 아니라면 기존 텐서 값 대입
-                    subTable[i] = table.remove(flatTensor, 1) -- 1차원화 된 텐서 요소 하나씩 대입
-                end
-                
-                if index[#index] == dim then-- 맨 끝 인덱스가 현 차원 끝이면
-                    for j = 1, #index do
-                        if index[#index - j] ~= dimensions[depth - (j)] then-- 인덱스 중에 끝부터 검사해서  최대차원 아닌거 1 증가
-                            index[#index - j] = index[#index - j] + 1
-                            index[#index] = 1-- 맨 끝 인덱스 초기화
-                            break-- 인덱스 증가했으므로 탈출
-                        elseif index[#index - j] == dimensions[depth - (j)] then
-                            index[#index - j] = 1 --혹시 최대값 걸리면 초기화
-                        end
-                    end
-                else
-                    index[#index] = index[#index] + 1-- 맨 끝 인덱스가 현차원 끝이 아니면 1증가
-                end
-            end
+-- 텐서 패딩 (텐서, {각 축에 대한 패딩 수치}, 패딩 값(기본 0))
+function Tensor.padding(tensor, paddingToDimension, initial)
+    initial = initial or 0
+    local paddedTable = tensor
+    for i, value in ipairs(paddingToDimension) do
+        if value <= 0 then
+            goto continue
         end
-        return subTable
+        local padTensorSize = paddedTable.size
+        padTensorSize[i] = 1
+        local padTensor = Tensor.emptyTensor(padTensorSize, initial)
+
+        for j = 1, math.floor(value/2+(2/3)) do
+            paddedTable = Tensor.concat(paddedTable, padTensor, i)
+        end
+        for j = 1, math.floor(value/2) do
+            paddedTable = Tensor.concat(padTensor, paddedTable, i)
+        end
+        ::continue::
     end
-    return Tensor(create(paddingTensorSize, 1))
+    return Tensor(paddedTable.values)
 end
 
--- 시작인덱스부터 끝 인덱스까지 텐서의 일부를 추출
-function Tensor:slice(startIndex, endIndex)
-    if #startIndex ~= #endIndex then
-        error("startIndex's len and endIndex's len are not same")
-    end
-    local beginIndex = {}-- 모든 요소가 finishIndex보다 작은 출발점 (인덱스 비교 용이를 위함)
-    local finishIndex = {}-- 모든 요소가 beginIndex보다 큰 종말점 (인덱스 비교 용이를 위함)
+function Tensor:slice(startIndexTable, endIndexTable)
+    local dimension = self.dimension
 
-    local sliceTensor = {}-- 추출할 텐서
-    local sliceTensorShape = {}-- 추출할 텐서 크기
-    for i = 1, #startIndex do
-        sliceTensorShape[i] = math.abs(endIndex[i] - startIndex[i]) + 1
-        beginIndex[i] = math.min(endIndex[i] ,startIndex[i])
-        finishIndex[i] = math.max(endIndex[i] ,startIndex[i])
-    end
+    local function slice(tensor, dim)
+        local startIndex = startIndexTable[dim]
+        local endIndex = endIndexTable[dim]
+        local result = tensor
 
-    local index = {}
-    for i = 1, self.dimension do-- 인덱스 초기화
-        index[i] = 1
-    end
-    local count = 1-- 1부터 시작해야하기 때문
-    local function create(table, dimensions, depth)
-        local dim = dimensions[depth]
-        for i = 1, dim do
-            if depth < #dimensions then
-                -- 하위 차원으로 재귀적으로 테이블 생성
-                create(table[i], dimensions, depth + 1)
+        local slicedTable = {}
+        for j = startIndex, endIndex do
+            if dim < dimension then
+                table.insert(slicedTable, slice(result[j], dim+1))
             else
-                local function is_index_in()-- 인덱스가 추출 구간안에 존재하는지
-                    local bool = true
-                    for j = 1, #index do
-                        if index[j] < beginIndex[j] or index[j] > finishIndex[j] then-- 인덱스가 추출구간이 한번이라도 아니라면
-                            bool = false
-                        end
-                    end
-                    return bool
-                end
-                if is_index_in() then-- 범위 안에 있다면 요소 삽입
-                    sliceTensor[count] = table[i]
-                    count = count + 1
-                end
-                
-                if index[#index] == dim then-- 맨 끝 인덱스가 현 차원 끝이면
-                    for j = 1, #index do
-                        if index[#index - j] ~= dimensions[depth - (j)] then-- 인덱스 중에 끝부터 검사해서  최대차원 아닌거 1 증가
-                            index[#index - j] = index[#index - j] + 1
-                            index[#index] = 1-- 맨 끝 인덱스 초기화
-                            break-- 인덱스 증가했으므로 탈출
-                        elseif index[#index - j] == dimensions[depth - (j)] then
-                            index[#index - j] = 1 --혹시 최대값 걸리면 초기화
-                        end
-                    end
-                else
-                    index[#index] = index[#index] + 1-- 맨 끝 인덱스가 현차원 끝이 아니면 1증가
-                end
+                table.insert(slicedTable, result[j])
             end
         end
-        return sliceTensor
+        return slicedTable
     end
-    create(self.values, self.size, 1)
-    return Tensor(sliceTensor):reshape(sliceTensorShape)
+
+    return Tensor(slice(self.values, 1))
 end
 
 -- Tensor 요소 총 합
@@ -467,41 +461,48 @@ function Tensor:sum()
     return result
 end
 
--- Tensor SoftMax 구현 --maybe TODO (분모 연산을 테이블 분리해서 해야할수도)
-function Tensor.SoftMax(tensor)
-    local e = math.exp(1)
-    local denominator = 0
-    local function denominator_SoftMax(table, dimensions, depth)
-        local dim = dimensions[depth]
-        local subTable = {}
-        for i = 1, dim do
-            if depth < #dimensions then
-                -- 하위 차원으로 재귀적으로 테이블 생성
-                subTable[i] = denominator_SoftMax(table[i], dimensions, depth + 1)
-            else
-                denominator = denominator + e^table[i]
-            end
-        end
-        return subTable
-    end
-    denominator_SoftMax(tensor.values, tensor.size, 1)
-    local function SoftMax(table, dimensions, depth)
-        local dim = dimensions[depth]
-        local subTable = {}
-        for i = 1, dim do
-            if depth < #dimensions then
-                -- 하위 차원으로 재귀적으로 테이블 생성
-                subTable[i] = SoftMax(table[i], dimensions, depth + 1)
-            else
-                subTable[i] = e^table[i] / denominator
-            end
-        end
-        return subTable
-    end
-    return Tensor(SoftMax(tensor.values, tensor.size, 1))
+-- 활성화 함수 모음
+function Tensor.activation(name)
+    local activationFunction = { -- 활성화 함수 모음
+        ReLU = function(tensor) return Tensor.apply(tensor ,function(x)
+            return (x > Node(0)) and (x) or (x * 0.01)
+        end) end,
+        Tanh = function(tensor) return Tensor.apply(tensor, function(x)
+            return ( math.exp(1)^(2*x) - 1 ) / (math.exp(1)^(2*x) + 1)
+        end) end,
+        Sigmoid = function(tensor) return Tensor.apply(tensor, function(x)
+            return ( 1 ) / (1 + math.exp(1)^(-x))
+        end) end,
+        SoftMax = function(tensor) local sum = (Tensor.apply(tensor, function(x) return math.exp(1)^(x) end):sum()) 
+            return Tensor.apply(tensor, function(x)
+                return (math.exp(1)^x) / sum
+        end) end,
+        Linear = function(tensor) return Tensor.apply(tensor, function(x)
+            return x-- Node
+        end) end
+    }
+    return activationFunction[name]
 end
+
 --#endregion
 --#region Tensor 비연산 메서드 구현부
+
+function Tensor.toTable(tensor)
+    local function _toTable(table, dimensions, depth)
+        local dim = dimensions[depth]
+        local subTable = {}
+        for i = 1, dim do
+            if depth < #dimensions then
+                -- 하위 차원으로 재귀적으로 테이블 생성
+                subTable[i] = _toTable(table[i], dimensions, depth + 1)
+            else
+                subTable[i] = table[i].value.real
+            end
+        end
+        return subTable
+    end
+    return _toTable(tensor.values, tensor.size, 1)
+end
 
 -- Tensor의 형태 변경 Tensor:reshape({0,0,0}) or Tensor:reshape(0,0,0)
 function Tensor:reshape(...)
@@ -555,7 +556,7 @@ function Tensor.stack(...)
     local tensors = {...}
     local stackedTensor = {}
     for _, tensor in pairs(tensors) do
-        table.insert(stackedTensor, 1, tensor.values)
+        table.insert(stackedTensor, tensor.values)
     end
     return Tensor(stackedTensor)
 end

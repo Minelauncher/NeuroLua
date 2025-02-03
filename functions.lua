@@ -18,13 +18,47 @@ function Gaussian_Distribution_Probability_Density(mean, stddev, value)
     return (1 / math.sqrt(2*math.pi * stddev^2)) * math.exp(1)^(-((value - mean)/(2 * stddev^2)))
 end
 
--- 테이블 요소 곱
+-- 1차원 테이블 사이의 차
+function subTableToTable(table1, table2)
+    local table3 = {}
+    for i = 1, #table1 do
+        table3[i] = table1[i] - table2[i]
+    end
+    return table3
+end
+
+-- 1차원 테이블 사이의 합
+function addTableToTable(table1, table2)
+    local table3 = {}
+    for i = 1, #table1 do
+        table3[i] = table1[i] + table2[i]
+    end
+    return table3
+end
+
+-- 1차원 테이블 요소 곱
 function mulTable(table)
     local sum = 1
     for _, value in pairs(table) do
         sum = sum * value
     end
     return sum
+end
+
+-- 1차원 테이블 요소 합
+function addTable(table)
+    local sum = 0
+    for _, value in pairs(table) do
+        sum = sum + value
+    end
+    return sum
+end
+
+-- 테이블 안의 요소 2개를 스왑
+function swapInTable(table, i, j)
+    local temp = table[i]
+    table[i] = table[j]
+    table[j] = temp
 end
 
 -- 테이블 원하는 크기로 하나 생성 초기값 지정 가능
@@ -50,6 +84,16 @@ function tableCopy(original)
         copy[key] = tableCopy(value)
     end
     return copy
+end
+
+-- 1차원 테이블 출력
+function printTable(table)
+    local str = "{"
+    for key, value in pairs(table) do
+        str = str.." "..value.." "
+    end
+    str = str.."}"
+    print(str)
 end
 
 -- ANSI 이스케이프 코드로 RGB 색상을 정의하는 함수
