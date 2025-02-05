@@ -7,7 +7,7 @@
 
 간단한 사용 예)
 
-'''lua
+```
 local inputTensor0 = Tensor({
     {0,0,1,0,0},
     {0,0,1,0,0},
@@ -56,4 +56,4 @@ local inputTensor3 = Tensor({
     {0,1,0,0,0}})
 print(cnn:forwardPropagation(inputTensor3))
 cnn:summary()
-'''
+```
