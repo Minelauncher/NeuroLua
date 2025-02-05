@@ -5,8 +5,10 @@
 
 파일 하나로 합칠 것을 염두에 두고 제작하였습니다.
 
-간단한 사용 예)
+## 사용 예
 
+### 입력 데이터 정의
+5 * 5 1과 2 숫자 모양 데이터
 ```
 local inputTensor0 = Tensor({
     {0,0,1,0,0},
@@ -22,9 +24,14 @@ local inputTensor1 = Tensor({
     {0,1,1,0,0},
     {1,1,1,1,1}})
 local targetTensor1 = Tensor({0,1,0})
-
+```
+### 모델 정의
+간단한 CNN 모델
+```
+-- 배치로 묶음
 local inputTensor01 = Tensor.stack(inputTensor0, inputTensor1)
 local targetTensor01 = Tensor.stack(targetTensor0, targetTensor1)
+
 cnn = Model('CNN', {5,5}, {3})
 -- 합성곱: 특성맵, 입력크기, 필터크기, 필터개수, 패딩, 스트라이드, 활성화함수
 -- 풀링: 특성맵, 입력크기, 풀링크기, 패딩, 스트라이드
@@ -32,9 +39,12 @@ cnn = Model('CNN', {5,5}, {3})
 cnn.layer.convolution(0, {5,5}, {3,3}, 4, 1, 1, 'ReLU')
 cnn.layer.pooling(4, {5,5}, {2,2}, 0, 2)
 cnn.layer.dense({4,2,2}, {3}, 'SoftMax', false)
---
-cnn:load("CNNdata.lua")
-for i = 1, 500 do -- 200 온라인 학습 예시
+```
+### 학습
+데이터가 존재한다면 불러오기 후 학습, 그리고 저장
+```
+cnn:load("CNNdata.lua") -- 기존 데이터가 있다면 사용
+for i = 1, 500 do -- 500 에포크 학습
     --Sleep(100)
     local start_time = os.time()
     local error1 = cnn:learn(inputTensor01, targetTensor01, 'CrossEntropy', 0.01)
@@ -47,7 +57,10 @@ for i = 1, 500 do -- 200 온라인 학습 예시
 end
 cnn:save("CNNdata.lua")
 print(cnn:forwardPropagation(inputTensor01))
---
+```
+### 검증
+다른 데이터로 학습 확인 후 신경망 정보 요약 출력
+```
 local inputTensor3 = Tensor({
     {0,1,0,0,0},
     {0,1,0,0,0},
