@@ -5,29 +5,55 @@
 
 파일 하나로 합칠 것을 염두에 두고 제작하였습니다.
 
-필수적이진 않아서 배치단위 학습은 아직 구현하지 않았습니다. 
-
 간단한 사용 예)
 
-local Model = require("NeuroLua")
+'''lua
+local inputTensor0 = Tensor({
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0},
+    {0,0,1,0,0}})
+local targetTensor0 = Tensor({1,0,0})
+local inputTensor1 = Tensor({
+    {0,1,1,1,0},
+    {1,0,0,0,1},
+    {0,0,0,1,0},
+    {0,1,1,0,0},
+    {1,1,1,1,1}})
+local targetTensor1 = Tensor({0,1,0})
 
-math.randomseed(os.time())
-
--- 학습에 사용할 임시 정보
-local inputTensor0 = Tensor({{1,1,1},{1,1,1},{1,1,1}})
-local targetTensor0 = Tensor({1,1,1})
-
--- 모델 구현
-nn = Model('CNN')
-nn.layer.convolution({3,3},{3,3},3,1,1)
-nn.layer.pooling(1, {3,3}, {2,2})
-nn.layer.dense({1,2,2}, {3}, 'ReLU')
-nn.layer.dense({3}, {3}, 'Linear')
-
-nn.data:add(inputTensor0, targetTensor0)
-
-for i = 1, 200 do -- 200 에포크 온라인 학습 예시
-    print(nn:learn(inputTensor0, targetTensor0, 'MSE', 0.01))
+local inputTensor01 = Tensor.stack(inputTensor0, inputTensor1)
+local targetTensor01 = Tensor.stack(targetTensor0, targetTensor1)
+cnn = Model('CNN', {5,5}, {3})
+-- 합성곱: 특성맵, 입력크기, 필터크기, 필터개수, 패딩, 스트라이드, 활성화함수
+-- 풀링: 특성맵, 입력크기, 풀링크기, 패딩, 스트라이드
+-- 연결: 입력크기, 출력크기, 활성화함수, 레이어 정규화 여부
+cnn.layer.convolution(0, {5,5}, {3,3}, 4, 1, 1, 'ReLU')
+cnn.layer.pooling(4, {5,5}, {2,2}, 0, 2)
+cnn.layer.dense({4,2,2}, {3}, 'SoftMax', false)
+--
+cnn:load("CNNdata.lua")
+for i = 1, 500 do -- 200 온라인 학습 예시
+    --Sleep(100)
+    local start_time = os.time()
+    local error1 = cnn:learn(inputTensor01, targetTensor01, 'CrossEntropy', 0.01)
+    os.execute("cls")
+    print(error1)
+    local end_time = os.time()
+    local elapsed_time = end_time - start_time
+    print("Spend Time:", elapsed_time, "Second")
+    print(i, "epoch")
 end
-print(nn:forwardPropagation(inputTensor0))-- 결과 확인
-nn:summary()-- 신경망 전체적인 정보 출력
+cnn:save("CNNdata.lua")
+print(cnn:forwardPropagation(inputTensor01))
+--
+local inputTensor3 = Tensor({
+    {0,1,0,0,0},
+    {0,1,0,0,0},
+    {0,1,0,0,0},
+    {0,1,0,0,0},
+    {0,1,0,0,0}})
+print(cnn:forwardPropagation(inputTensor3))
+cnn:summary()
+'''
