@@ -32,6 +32,7 @@ local targetTensor1 = Tensor({0,1,0})
 local inputTensor01 = Tensor.stack(inputTensor0, inputTensor1)
 local targetTensor01 = Tensor.stack(targetTensor0, targetTensor1)
 
+local Model = require('NeuroLua')
 cnn = Model('CNN', {5,5}, {3})
 -- 합성곱: 특성맵, 입력크기, 필터크기, 필터개수, 패딩, 스트라이드, 활성화함수
 -- 풀링: 특성맵, 입력크기, 풀링크기, 패딩, 스트라이드
