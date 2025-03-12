@@ -1,7 +1,7 @@
 local Model = require("NeuroLua")
 
 math.randomseed(os.time())
---[[
+
 local inputTensor0 = Tensor({
     {0,0,1,0,0},
     {0,0,1,0,0},
@@ -50,8 +50,8 @@ local inputTensor3 = Tensor({
     {0,1,0,0,0}})
 print(cnn:forwardPropagation(inputTensor3))
 cnn:summary()
---]]
---
+
+
 local test = Tensor({
     {1,2,3,4},
     {2,3,4,5},
@@ -66,7 +66,7 @@ end
 -- 원래는 포지셔널 인코딩도 해야함
 testTable = Tensor.stack(unpack(testTable))
 
-local attention = Model('CNN', {3,4,4}, {1})
+local attention = Model('AT', {3,4,4}, {1})
 attention.layer.attention(2, {4,4}, {4,4}, {4,4})
 attention.layer.dense({4,4}, {1}, 'Linear', false)
 --
@@ -83,7 +83,5 @@ for i = 1, 500 do -- 200 온라인 학습 예시
     print(i, "epoch")
 end
 attention:save("AttentionData.lua")
---]]
+
 print(attention:forwardPropagation(testTable))
---]]
---]]
