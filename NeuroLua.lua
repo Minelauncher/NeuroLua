@@ -187,23 +187,26 @@ function Convolution.new(featureNum, inputShape, filterShape, filterNum, padding
     self.featureNum = featureNum -- number
 
     self.inputShape = inputShape -- table
+    table.insert(self.inputShape, 1, featureNum)
 
     self.filterShape = filterShape -- table
+    table.insert(self.filterShape, 1, featureNum)
     self.filterNum = filterNum -- number
 
     self.stride = stride or 1 -- number
     self.padding = padding or 1-- number
 
-    self.outputShape = {} -- table
-    for i = 1, #self.filterShape do
+    self.outputShape = {1} -- table
+    for i = 2, #self.filterShape do
         self.outputShape[i] = math.floor((self.inputShape[i] - self.filterShape[i] + 2 * self.padding) / self.stride) + 1
     end
 
     self.filter = {}
     self.bias = {}
     for i = 1, filterNum do
-        self.filter[i] = Tensor.apply( Tensor.emptyTensor(filterShape) , function (x) return x + (2*math.random()-1) end)
-        self.bias[i] = Tensor.apply( Tensor.emptyTensor(self.outputShape) , function (x) return x + (2*math.random()-1) end)
+        self.filter[i] = Tensor.apply( Tensor.emptyTensor(self.filterShape) , function (x) return x + (2*math.random()-1) end)
+        --self.bias[i] = Tensor.apply( Tensor.emptyTensor(self.outputShape) , function (x) return x + (2*math.random()-1) end)
+        self.bias[i] = Tensor({2*math.random()-1})
     end
 
     self.activationFunctionName = activationFunctionName or 'ReLU'-- 활성화 함수 이름 (index)
@@ -213,6 +216,8 @@ function Convolution.new(featureNum, inputShape, filterShape, filterNum, padding
     self.Momentum_dL_dB = initializeTable(filterNum, 0)
     self.RMSprop_dL_dB = initializeTable(filterNum, 0)
 
+    self.iteration = 1
+
     return self
 end
 setmetatable(Convolution, {
@@ -221,6 +226,62 @@ setmetatable(Convolution, {
     end
 })
 
+function Convolution:forwardPropagation(inputTensor)
+    local batchSize = 1
+    local extraDimension = #inputTensor.size - #self.inputShape
+    if extraDimension >= 0 then
+        batchSize = inputTensor.size[1]
+    end
+
+    inputTensor = inputTensor:reshape({batchSize, unpack(self.inputShape)})
+
+    local batchFeatureTensorTable = {}
+    for batch = 1, batchSize do
+        local featureTensorTable = {}
+        local featureTensor = inputTensor[batch]
+        for filterNum = 1, self.filterNum do
+            local function _convolution(tensor, filter, indexTable, outputDimension, depth)
+                local dim = outputDimension[depth]
+                local subTable = {}
+                for i = 1, dim do
+                    if depth < #outputDimension then
+                        -- 하위 차원으로 재귀적으로 테이블 생성
+                        local newIndexTable = tableCopy(indexTable)
+                        newIndexTable[depth] = (i - 1) * self.stride
+                        subTable[i] = _convolution(tensor, filter, newIndexTable, outputDimension, depth + 1)
+                    else
+                        indexTable[depth] = (i - 1) * self.stride
+                        local filterSize = filter.size
+                        local startIndex = addTableToTable(indexTable, initializeTable(#indexTable, 1))
+                        local endIndex = addTableToTable(filterSize, indexTable)
+                        local slicedTensor = tensor:slice(startIndex, endIndex)
+                        subTable[i] = (slicedTensor * filter):sum()
+                    end
+                end
+                return subTable
+            end
+
+            local filter = self.filter[filterNum]
+            local padDimension = initializeTable(#featureTensor.size, self.padding*2)
+            padDimension[1] = 0 -- 특성차원 패딩은 하지 않음
+            local paddedTensor = Tensor.padding(featureTensor, padDimension, 0)
+            local convolutionedTensor = Tensor(_convolution(paddedTensor, filter, initializeTable(#self.inputShape, 0), self.outputShape, 1)) + self.bias[filterNum].values[1] -- bias 는 Tensor이기 때문에 Node 만 뽑아서 연산
+            -- 활성화 함수 적용
+            convolutionedTensor = Tensor.activation(self.activationFunctionName)(convolutionedTensor)
+            -- 테이블에 컨볼루션된 텐서 추가
+            table.insert(featureTensorTable, convolutionedTensor) -- {1, 출력차원...} 크기를 가짐
+        end
+        -- 배치테이블에 병렬으로 처리된 특성맵들 추가
+        local batchFeatureTensor = table.remove(featureTensorTable,1)
+        for key, tensor in pairs(featureTensorTable) do
+            batchFeatureTensor = Tensor.concat(batchFeatureTensor, tensor, 1) -- {filterNum, 출력차원} 크기를 가짐
+        end
+        table.insert(batchFeatureTensorTable, batchFeatureTensor)
+    end
+    local outputTensor = Tensor.stack(unpack(batchFeatureTensorTable)) -- {batch , filterNum, 출력차원} 크기를 가짐
+    return outputTensor
+end
+--[[
 function Convolution:forwardPropagation(inputTensor)
     local batchSize = 1
     local extraDimension = #inputTensor.size - #self.inputShape
@@ -270,7 +331,7 @@ function Convolution:forwardPropagation(inputTensor)
 
                 local filter = self.filter[filterNum]
                 local paddedTensor = Tensor.padding(featureTensor, initializeTable(#self.filterShape, self.padding*2), 0)
-                local convolutionedTensor = Tensor(_convolution(paddedTensor, filter, initializeTable(#self.inputShape, 0), self.outputShape, 1)) + self.bias[filterNum]
+                local convolutionedTensor = Tensor(_convolution(paddedTensor, filter, initializeTable(#self.inputShape, 0), self.outputShape, 1)) + self.bias[filterNum].values[1] -- bias 는 Tensor이기 때문에 Node 만 뽑아서 연산
                 -- 활성화 함수 적용
                 convolutionedTensor = Tensor.activation(self.activationFunctionName)(convolutionedTensor)
                 -- 테이블에 컨볼루션 추가
@@ -290,8 +351,9 @@ function Convolution:forwardPropagation(inputTensor)
     local outputTensor = Tensor.stack(unpack(parallelBatchTensorTable))
     return outputTensor
 end
-
+--]]
 function Convolution:backPropagation(learningRate)
+    local t = self.iteration or 1  -- 현재 업데이트 반복 횟수 저장
     for i = 1, self.filterNum do
         local dL_dF = self.filter[i]:grad()
         local dL_dB = self.bias[i]:grad()
@@ -305,11 +367,18 @@ function Convolution:backPropagation(learningRate)
         self.RMSprop_dL_dF[i] = Tensor.apply(self.RMSprop_dL_dF[i], function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
         self.RMSprop_dL_dB[i] = Tensor.apply(self.RMSprop_dL_dB[i], function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
 
-        self.filter[i] = self.filter[i] - learningRate * ((self.RMSprop_dL_dF[i])) * (self.Momentum_dL_dF[i])
-        self.bias[i] = self.bias[i] - learningRate * ((self.RMSprop_dL_dB[i])) * (self.Momentum_dL_dB[i])
+        -- 바이어스 보정 (Bias Correction)
+        local m_hat_F = Tensor.deepcopy(self.Momentum_dL_dF[i]) / (1 - b1^t)
+        local v_hat_F = Tensor.deepcopy(self.RMSprop_dL_dF[i]) / (1 - b2^t)
+        local m_hat_B = Tensor.deepcopy(self.Momentum_dL_dB[i]) / (1 - b1^t)
+        local v_hat_B = Tensor.deepcopy(self.RMSprop_dL_dB[i]) / (1 - b2^t)
+
+        self.filter[i] = self.filter[i] - learningRate * (m_hat_F / v_hat_F)-- ((self.RMSprop_dL_dF[i])) * (self.Momentum_dL_dF[i])
+        self.bias[i] = self.bias[i] - learningRate * (m_hat_B / v_hat_B)--((self.RMSprop_dL_dB[i])) * (self.Momentum_dL_dB[i])
 
         self.filter[i]:grad()
     end
+    self.iteration = t + 1
 end
 
 function Convolution:save(fileName, layerName)
@@ -522,6 +591,8 @@ function Dense.new(inputShape, layerShape, activationFunctionName, normalized)--
     self.Momentum_dL_dB = 0
     self.RMSprop_dL_dB = 0
 
+    self.iteration = 1
+
     self.activationFunctionName = activationFunctionName -- 활성화 함수 이름 (index)
 
     if normalized == nil then
@@ -540,7 +611,7 @@ setmetatable(Dense, {
 -- 레이어 순전파 
 function Dense:forwardPropagation(inputTensor)
     local outputShape = {}
-    inputTensor = Tensor.apply(inputTensor, function(x) return x + (math.random() * 2e-8 - 1e-8) end)
+    --inputTensor = Tensor.apply(inputTensor, function(x) return x + (math.random() * 2e-8 - 1e-8) end)
 
     local batchSize = 1 -- 입력 차원이 아닌 여분 차원의 길이
     local column = 1 -- 입력 차원의 길이
@@ -562,9 +633,9 @@ function Dense:forwardPropagation(inputTensor)
         if self.layerNormalized == true then
             -- 레이어 정규화
             local E = 1e-8
-            local tempTensor = Tensor.deepcopy(In_dot_Wt[i]) -- Tensor 평균과 표준편차 계산시에는 영향이 없어야 하므로 임시 복제
+            local tempTensor = In_dot_Wt[i]--Tensor.deepcopy(In_dot_Wt[i]) -- Tensor 평균과 표준편차 계산시에는 영향이 없어야 하므로 임시 복제
             local average = (tempTensor):sum() / tempTensor:__len() -- Node
-            local stdDEV = ( ( Tensor.apply(tempTensor, function(x) return (x - average)^2 end) ):sum() )^(1/2)-- Node
+            local stdDEV = ( ( Tensor.apply(tempTensor, function(x) return (x - average)^2 end) ):sum() / tempTensor:__len() )^(1/2)-- Node
             local Normalized = Tensor.apply(In_dot_Wt[i], function(x) return (x - average) / (stdDEV + E) end) -- Tensor
             --레이어 정규화 레이어 별로 수행하고 감마 베타 적용하여 테이블에 삽입
             gx_b[i] = self.gamma * Normalized + self.beta -- Tensor
@@ -580,6 +651,7 @@ function Dense:forwardPropagation(inputTensor)
 end
 
 function Dense:backPropagation(learningRate)
+    local t = self.iteration or 1  -- 현재 업데이트 반복 횟수 저장
     -- ADAM 옵티마이저
     local dL_dW = (self.weights:grad())
     local dL_dG = (self.gamma:grad())
@@ -599,10 +671,20 @@ function Dense:backPropagation(learningRate)
     self.RMSprop_dL_dG = Tensor.apply(self.RMSprop_dL_dG, function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
     self.RMSprop_dL_dB = Tensor.apply(self.RMSprop_dL_dB, function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
 
+    -- 바이어스 보정 (Bias Correction)
+    local m_hat_W = Tensor.deepcopy(self.Momentum_dL_dW) / (1 - b1^t)
+    local v_hat_W = Tensor.deepcopy(self.RMSprop_dL_dW) / (1 - b2^t)
+    local m_hat_G = Tensor.deepcopy(self.Momentum_dL_dG) / (1 - b1^t)
+    local v_hat_G = Tensor.deepcopy(self.RMSprop_dL_dG) / (1 - b2^t)
+    local m_hat_B = Tensor.deepcopy(self.Momentum_dL_dB) / (1 - b1^t)
+    local v_hat_B = Tensor.deepcopy(self.RMSprop_dL_dB) / (1 - b2^t)
+
     -- 오차 반영
-    self.weights = self.weights - learningRate * ((self.RMSprop_dL_dW)) * (self.Momentum_dL_dW)
-    self.gamma = self.gamma - learningRate * ((self.RMSprop_dL_dG)) * (self.Momentum_dL_dG)
-    self.beta = self.beta - learningRate * ((self.RMSprop_dL_dB)) * (self.Momentum_dL_dB)
+    self.weights = self.weights - learningRate * (m_hat_W / v_hat_W)--((self.RMSprop_dL_dW)) * (self.Momentum_dL_dW)
+    self.gamma = self.gamma - learningRate * (m_hat_G / v_hat_G)--((self.RMSprop_dL_dG)) * (self.Momentum_dL_dG)
+    self.beta = self.beta - learningRate * (m_hat_B / v_hat_B)--((self.RMSprop_dL_dB)) * (self.Momentum_dL_dB)
+
+    self.iteration = t + 1
 end
 
 function Dense:save(fileName, layerName)

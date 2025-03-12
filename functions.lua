@@ -1,10 +1,7 @@
 --#region 함수 모음
-
+math.randomseed(os.time())
 -- Box-Muller 변환을 사용하여 하나의 표준 정규분포 난수 생성(mean==평균, stddev==표준편차)
 function GenerateStandardNormal(mean, stddev)
-    if stddev < 0 then
-        error("stddev's value is under zero")
-    end
     local u1 = math.random()
     local u2 = math.random()
 
@@ -15,7 +12,31 @@ function GenerateStandardNormal(mean, stddev)
 end
 
 function Gaussian_Distribution_Probability_Density(mean, stddev, value)
-    return (1 / math.sqrt(2*math.pi * stddev^2)) * math.exp(1)^(-((value - mean)/(2 * stddev^2)))
+    return (1 / math.sqrt(2*math.pi * stddev^2)) * math.exp(1)^(-((value - mean)^2/(2 * stddev^2)))
+end
+
+-- 두 배열(리스트) 테이블을 병합하여 새 배열 테이블을 반환
+function mergeArrays(t1, t2)
+    local merged = {}
+    for i = 1, #t1 do
+        table.insert(merged, t1[i])
+    end
+    for i = 1, #t2 do
+        table.insert(merged, t2[i])
+    end
+    return merged
+end
+
+-- t1과 t2를 병합하여 새 테이블 반환 (얕은 병합)
+function mergeTables(t1, t2)
+    local merged = {}
+    for key, value in pairs(t1) do
+        merged[key] = value
+    end
+    for key, value in pairs(t2) do
+        merged[key] = value  -- 동일한 키가 있으면 덮어씁니다.
+    end
+    return merged
 end
 
 -- 1차원 테이블 사이의 차

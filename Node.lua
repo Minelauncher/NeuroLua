@@ -178,9 +178,10 @@ end
 
 -- 로그 노드 생성 log_y_(x)
 function Node.log(x, y)
+    y = y or Node(math.exp(1))
     x, y = Node.convertToNode(x, y)
 
-    local real = math.log(x.value.real ,y.value.real)
+    local real = math.log(x.value.real, y.value.real)
 
     local z = Node(real, 0)
     z.grad_fn = function(dz_real, dz_imag)

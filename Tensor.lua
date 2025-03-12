@@ -473,9 +473,9 @@ function Tensor.activation(name)
         Sigmoid = function(tensor) return Tensor.apply(tensor, function(x)
             return ( 1 ) / (1 + math.exp(1)^(-x))
         end) end,
-        SoftMax = function(tensor) local sum = (Tensor.apply(tensor, function(x) return math.exp(1)^(x) end):sum()) 
+        SoftMax = function(tensor) local max = Tensor.max(tensor) local sum = (Tensor.apply(tensor, function(x) return math.exp(1)^(x-max) end):sum()) 
             return Tensor.apply(tensor, function(x)
-                return (math.exp(1)^x) / sum
+                return (math.exp(1)^(x-max) / sum)
         end) end,
         Linear = function(tensor) return Tensor.apply(tensor, function(x)
             return x-- Node
@@ -486,6 +486,28 @@ end
 
 --#endregion
 --#region Tensor 비연산 메서드 구현부
+
+-- 반환값 Node
+function Tensor.max(tensor)
+    local max = nil
+    local function findMax(table, dimensions, depth)
+        local dim = dimensions[depth]
+        for i = 1, dim do
+            if depth < #dimensions then
+                -- 하위 차원으로 재귀
+                findMax(table[i], dimensions, depth + 1)
+            else
+                if max then
+                    max = table[i] > max and table[i] or max
+                else
+                    max = table[i]
+                end
+            end
+        end
+    end
+    findMax(tensor.values, tensor.size, 1)
+    return max
+end
 
 function Tensor.toTable(tensor)
     local function _toTable(table, dimensions, depth)
@@ -549,6 +571,59 @@ function Tensor:reshape(...)
         reshapedTensor = _reshape(flattenTensor, shape, 1)
     end
     return Tensor(reshapedTensor)
+end
+
+-- Tensor 차원 순서 변경 (permute)
+function Tensor:permute(...)
+    local order = {...}
+    if #order ~= self.dimension then
+         error("Dimension mismatch: Expected " .. self.dimension .. " but got " .. #order, 2)
+    end
+
+    -- 새 텐서의 크기 계산: 새로운 각 차원의 크기는 기존 텐서의 해당 차원 크기
+    local new_shape = {}
+    for k = 1, self.dimension do
+         new_shape[k] = self.size[order[k]]
+    end
+
+    -- 인덱스 리스트를 통해 self.values에서 값을 가져오는 헬퍼 함수
+    local function get_value(t, indices)
+         local ref = t
+         for i = 1, #indices do
+              ref = ref[indices[i]]
+         end
+         return ref
+    end
+
+    -- 재귀적으로 새 텐서 값을 채움.
+    -- new_indices는 새 텐서의 다중 인덱스 (i₁, i₂, …, iₙ)를 담는 배열입니다.
+    local function recursive_fill(new_indices, depth)
+         if depth > self.dimension then
+              -- new_indices는 새 텐서의 인덱스가 모두 채워진 상태.
+              -- 원본 인덱스 배열 orig는 다음과 같이 구함:
+              --   각 k (1~n)에 대해 orig[ order[k] ] = new_indices[k]
+              local orig = {}
+              for k = 1, self.dimension do
+                   orig[ order[k] ] = new_indices[k]
+              end
+              -- 원본 인덱스는 순서대로 정렬되어야 하므로
+              local ordered_orig = {}
+              for i = 1, self.dimension do
+                   ordered_orig[i] = orig[i]
+              end
+              return get_value(self.values, ordered_orig)
+         else
+              local arr = {}
+              for i = 1, new_shape[depth] do
+                   new_indices[depth] = i
+                   arr[i] = recursive_fill(new_indices, depth+1)
+              end
+              return arr
+         end
+    end
+
+    local new_values = recursive_fill({}, 1)
+    return Tensor(new_values)
 end
 
 -- 상위 차원으로 합침 (여러개 순차적으로 하고싶으면 table.unpack해서 넣을 것)
