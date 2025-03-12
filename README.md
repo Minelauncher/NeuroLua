@@ -37,7 +37,7 @@ cnn = Model('CNN', {5,5}, {3})
 -- 합성곱: 특성맵, 입력크기, 필터크기, 필터개수, 패딩, 스트라이드, 활성화함수
 -- 풀링: 특성맵, 입력크기, 풀링크기, 패딩, 스트라이드
 -- 연결: 입력크기, 출력크기, 활성화함수, 레이어 정규화 여부
-cnn.layer.convolution(0, {5,5}, {3,3}, 4, 1, 1, 'ReLU')
+cnn.layer.convolution(1, {5,5}, {3,3}, 4, 1, 1, 'ReLU')
 cnn.layer.pooling(4, {5,5}, {2,2}, 0, 2)
 cnn.layer.dense({4,2,2}, {3}, 'SoftMax', false)
 ```
