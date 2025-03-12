@@ -54,6 +54,8 @@ function Attention.new(headNum, QShape, KShape, VShape)
     self.Momentum_dL_dW_Vs = initializeTable(headNum, 0)
     self.RMSprop_dL_dW_Vs = initializeTable(headNum, 0)
 
+    self.iteration = 1
+
     return self
 end
 setmetatable(Attention, {
@@ -107,6 +109,7 @@ function Attention:forwardPropagation(inputTensor)
 end
 
 function Attention:backPropagation(learningRate)
+    local t = self.iteration or 1  -- 현재 업데이트 반복 횟수 저장
     for head = 1, self.headNum do
         local dL_dW_Qs = self.W_Qs[head]:grad()
         local dL_dW_Ks = self.W_Ks[head]:grad()
@@ -124,17 +127,31 @@ function Attention:backPropagation(learningRate)
         self.RMSprop_dL_dW_Ks[head] = Tensor.apply(self.RMSprop_dL_dW_Ks[head], function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
         self.RMSprop_dL_dW_Vs[head] = Tensor.apply(self.RMSprop_dL_dW_Vs[head], function(x) return (x > Node(0) and x^(-1/2) or 0) + E end)
 
-        self.W_Qs[head] = self.W_Qs[head] - learningRate * ((self.RMSprop_dL_dW_Qs[head])) * (self.Momentum_dL_dW_Qs[head])
-        self.W_Ks[head] = self.W_Ks[head] - learningRate * ((self.RMSprop_dL_dW_Ks[head])) * (self.Momentum_dL_dW_Ks[head])
-        self.W_Vs[head] = self.W_Vs[head] - learningRate * ((self.RMSprop_dL_dW_Vs[head])) * (self.Momentum_dL_dW_Vs[head])
+        -- 바이어스 보정 (Bias Correction)
+        local m_hat_W_Qs = Tensor.deepcopy(self.Momentum_dL_dW_Qs) / (1 - b1^t)
+        local v_hat_W_Qs = Tensor.deepcopy(self.RMSprop_dL_dW_Qs) / (1 - b2^t)
+        local m_hat_W_Ks = Tensor.deepcopy(self.Momentum_dL_dW_Ks) / (1 - b1^t)
+        local v_hat_W_Ks = Tensor.deepcopy(self.RMSprop_dL_dW_Ks) / (1 - b2^t)
+        local m_hat_W_Vs = Tensor.deepcopy(self.Momentum_dL_dW_Vs) / (1 - b1^t)
+        local v_hat_W_Vs = Tensor.deepcopy(self.RMSprop_dL_dW_Vs) / (1 - b2^t)
+
+        self.W_Qs[head] = self.W_Qs[head] - learningRate * (m_hat_W_Qs / v_hat_W_Qs)--((self.RMSprop_dL_dW_Qs[head])) * (self.Momentum_dL_dW_Qs[head])
+        self.W_Ks[head] = self.W_Ks[head] - learningRate * (m_hat_W_Ks / v_hat_W_Ks)--((self.RMSprop_dL_dW_Ks[head])) * (self.Momentum_dL_dW_Ks[head])
+        self.W_Vs[head] = self.W_Vs[head] - learningRate * (m_hat_W_Vs / v_hat_W_Vs)--((self.RMSprop_dL_dW_Vs[head])) * (self.Momentum_dL_dW_Vs[head])
 
         self.W_Qs[head]:grad()
         self.W_Ks[head]:grad()
         self.W_Vs[head]:grad()
     end
+    self.iteration = t + 1
 end
 
 function Attention:summary()
+    local str = " [layer]"
+    str = str..string.format("| Type: %10s |", "Attention")
+
+    local parameterUnits = 0
+    str = str..string.format("| Parameter: %5d |", parameterUnits)
 end
 
 function Attention:save(fileName, layerName)
@@ -422,7 +439,7 @@ function Convolution:summary()
     local str = " [layer]"
     str = str..string.format("| Type: %10s |", "Convolution")
 
-    local parameterUnits = #self.filter * addTable(self.filterShape)
+    local parameterUnits = (mulTable(self.filterShape) + 1) * self.featureNum
     str = str..string.format("| Parameter: %5d |", parameterUnits)
 
     local inputShape_str = "{ "

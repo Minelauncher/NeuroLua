@@ -1,35 +1,34 @@
+--[[
+--]]
 require("functions")
 
+-- value 및 grad 출력, 비교를 위한 메타테이블
 local valueMT = {
-    __tostring = function(self) -- value 출력
-        local str = ""
-        str = str..string.format("(%6.3f)", self.real)
-        return str
+    __tostring = function(self)
+        return string.format("(%6.3f)", self.real)
     end,
-    __eq = function(a, b) -- 동등
+    __eq = function(a, b)
         return a.real == b.real
     end,
-    __lt = function(a, b) -- 미만
+    __lt = function(a, b)
         return a.real < b.real
     end,
-    __le = function(a, b) -- 이하
+    __le = function(a, b)
         return a.real <= b.real
     end
 }
 
 local gradMT = {
-    __tostring = function(self) 
-        local str = ""
-        str = str..string.format("(%6.3f)", self.real)
-        return str
+    __tostring = function(self)
+        return string.format("(%6.3f)", self.real)
     end,
-    __eq = function(a, b) -- 동등
+    __eq = function(a, b)
         return a.real == b.real
     end,
-    __lt = function(a, b) -- 미만
+    __lt = function(a, b)
         return a.real < b.real
     end,
-    __le = function(a, b) -- 이하
+    __le = function(a, b)
         return a.real <= b.real
     end
 }
@@ -37,146 +36,215 @@ local gradMT = {
 local Node = {}
 Node.__index = Node
 
+-- Node 생성자: 기본 값, 허수부, 기울기 함수(옵션) 설정
 function Node.new(real, imag, grad_fn)
     local self = setmetatable({}, Node)
-
-    self.value = {real = real or 0, imag = imag or 0} -- 노드의 실수 출력 값, 노드의 허수 출력 값
+    
+    self.value = {real = real or 0, imag = imag or 0}
     self.value = setmetatable(self.value, valueMT)
-
-    self.grad = {real = 0, imag = 0} -- 그래디언트 
+    
+    self.grad = {real = 0, imag = 0}
     self.grad = setmetatable(self.grad, gradMT)
-
-    self.grad_fn = grad_fn or nil-- 역전파 함수
-
-    self.parents = {}    -- 부모 노드 (입력)
-    self.add_parent = function(parent) -- 노드에 부모 추가
-        table.insert(self.parents, parent)
-    end
-
+    
+    self.grad_fn = grad_fn or nil  -- 역전파 시 호출할 기울기 함수
+    self.parents = {}               -- 부모 노드 리스트 (필요 시 사용)
+    
     return self
 end
 
---#region Node 메타테이블 구현부
+-- Node 호출 시 Node.new를 대신 호출 (객체 선언 방식 변경)
 setmetatable(Node, {
-    __call = function(self, real, imag, grad_fn)-- 선언 방식 변경
+    __call = function(self, real, imag, grad_fn)
         return Node.new(real, imag, grad_fn)
     end
 })
 
-Node.__index = function(table, index)
-    local value = Node[index]
-    if type(value) == 'function' then
-        -- function table:func 처리
-        return value
-    else
-        -- 기본 __index 동작
-        return rawget(table, index)
-    end
+-- Node의 문자열 표현
+Node.__tostring = function(self)
+    return string.format("[Node]\n v: [%s] g: [%s]", tostring(self.value), tostring(self.grad))
 end
 
-Node.__newindex = function(table, index, value)
-    -- 기본 __newindex 동작
-    rawset(table, index, value)
-end
-
-Node.__tostring = function(self) -- value 출력
-    local str = ""
-    str = str..string.format("[Node]\n v: [%s] g: [%s]", self.value, self.grad)
-    return str
-end
-Node.__eq = function(a, b) -- 동등
+-- 동등 비교 등 (기본형은 그대로 유지)
+Node.__eq = function(a, b)
     a, b = Node.convertToNode(a, b)
     return a.value == b.value
 end
-Node.__lt = function(a, b) -- 미만
+
+Node.__lt = function(a, b)
     a, b = Node.convertToNode(a, b)
     return a.value < b.value
 end
-Node.__le = function(a, b) -- 이하
+
+Node.__le = function(a, b)
     a, b = Node.convertToNode(a, b)
     return a.value <= b.value
 end
---#endregion
 
---#region Node 연산 구현부
+-- backward 메소드: 역전파 시 기울기 함수 호출
+function Node:backward(dz_real, dz_imag)
+    local dz_real = dz_real or 1
+    local dz_imag = dz_imag or 1
+    self.grad.real = self.grad.real + dz_real
+    self.grad.imag = self.grad.imag + dz_imag
+    if self.grad_fn then
+        -- 미리 정의된 기울기 함수에 현재 노드와 미분값을 전달
+        self.grad_fn(self, dz_real, dz_imag)
+    end
+end
 
--- 덧셈 노드 생성 x+y
+-- convertToNode: 인자가 Node가 아니면 즉석에서 변환
+function Node.convertToNode(x, y)
+    if getmetatable(x) ~= Node then
+        x = Node(x)
+    end
+    if getmetatable(y) ~= Node then
+        y = Node(y)
+    end
+    return x, y
+end
+
+-------------------------------------------------------------------
+-- 미리 정의된 제너릭 기울기 함수들 (클로저 대신 재사용)
+-------------------------------------------------------------------
+
+local function generic_add_grad(node, dz_real, dz_imag)
+    -- 덧셈: d/dx = 1, d/dy = 1
+    node.left:backward(dz_real, dz_imag)
+    node.right:backward(dz_real, dz_imag)
+end
+
+local function generic_sub_grad(node, dz_real, dz_imag)
+    -- 뺄셈: d/dx = 1, d/dy = -1
+    node.left:backward(dz_real, dz_imag)
+    node.right:backward(-dz_real, -dz_imag)
+end
+
+local function generic_mul_grad(node, dz_real, dz_imag)
+    -- 곱셈: d/dx = y, d/dy = x
+    node.left:backward(dz_real * node.right.value.real, dz_imag * node.right.value.imag)
+    node.right:backward(dz_real * node.left.value.real, dz_imag * node.left.value.imag)
+end
+
+local function generic_div_grad(node, dz_real, dz_imag)
+    -- 나눗셈: x/y 미분 (단순화된 형태)
+    local left = node.left
+    local right = node.right
+    local a, b = left.value.real, left.value.imag
+    local c, d = right.value.real, right.value.imag
+    local denom = c^2 + d^2
+    left:backward(dz_real * c / denom, dz_imag * -d / denom)
+    
+    -- 우변에 대한 미분은 복잡하므로 단순화한 예시
+    local denom2 = (c^2 - d^2)^2 + 4 * c^2 * d^2
+    right:backward(dz_real * -a * (c^2 - d^2) / denom2, dz_imag * -b * (c^2 - d^2) / denom2)
+end
+
+-- 지수 함수: y = exp(x), dy/dx = exp(x)
+local function generic_exp_grad(node, dz_real, dz_imag)
+    node.child:backward(dz_real * node.value.real, dz_imag * node.value.real)
+end
+
+-- 로그 함수: y = log(x), dy/dx = 1/x
+local function generic_log_grad(node, dz_real, dz_imag)
+    local left = node.left
+    local right = node.right
+
+    left:backward(dz_real * (1 / (left.value.real * math.log(right.value.real))))
+    right:backward(dz_real * -(math.log(left.value.real) / (right.value.real * math.log(right.value.real)^2)))
+end
+
+-- 거듭제곱 함수: y = x^p, dy/dx = p * x^(p-1)
+local function generic_pow_grad(node, dz_real, dz_imag)
+    local child = node.child
+    local exponent = node.exponent
+
+    child:backward(dz_real * exponent.value.real * child.value.real^(exponent.value.real - 1))
+    exponent:backward(dz_real * child.value.real^exponent.value.real * math.log(child.value.real))
+end
+
+-- 사인 함수: y = sin(x), dy/dx = cos(x)
+local function generic_sin_grad(node, dz_real, dz_imag)
+    node.child:backward(dz_real * math.cos(node.child.value.real), dz_imag * math.cos(node.child.value.real))
+end
+
+-- 코사인 함수: y = cos(x), dy/dx = -sin(x)
+local function generic_cos_grad(node, dz_real, dz_imag)
+    node.child:backward(-dz_real * math.sin(node.child.value.real), -dz_imag * math.sin(node.child.value.real))
+end
+
+-------------------------------------------------------------------
+-- 연산자 오버로딩: 클로저 대신 제너릭 기울기 함수를 사용
+-------------------------------------------------------------------
+
+-- 덧셈
 Node.__add = function(x, y)
     x, y = Node.convertToNode(x, y)
-    local a = x.value.real
-    local b = x.value.imag
-    local c = y.value.real
-    local d = y.value.imag
-
-    local real = a + c
-    local imag = b + d
-    local z = Node(real, imag)
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real, dz_imag)
-        y:backward(dz_real, dz_imag)
-    end
+    local sum = x.value.real + y.value.real  -- 허수부는 단순히 0으로 처리 (필요에 따라 확장 가능)
+    local z = Node(sum, 0)
+    z.grad_fn = generic_add_grad
+    z.left = x
+    z.right = y
     return z
 end
 
--- 뺄셈 노드 생성 x-y
-Node.__sub = function (x, y)
+-- 뺄셈
+Node.__sub = function(x, y)
     x, y = Node.convertToNode(x, y)
-    local a = x.value.real
-    local b = x.value.imag
-    local c = y.value.real
-    local d = y.value.imag
-
-    local real = a - c
-    local imag = b - d
-    local z = Node(real, imag)
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real, dz_imag)
-        y:backward(-dz_real, -dz_imag)
-    end
+    local diff = x.value.real - y.value.real
+    local z = Node(diff, 0)
+    z.grad_fn = generic_sub_grad
+    z.left = x
+    z.right = y
     return z
 end
 
--- 곱셈 노드 생성 x*y
+-- 곱셈
 Node.__mul = function(x, y)
     x, y = Node.convertToNode(x, y)
-    local a = x.value.real
-    local b = x.value.imag
-    local c = y.value.real
-    local d = y.value.imag
-
-    local real = (a * c - b * d)
-    local imag = (a * d + b * c)
+    local a, b = x.value.real, x.value.imag
+    local c, d = y.value.real, y.value.imag
+    local real = a * c - b * d
+    local imag = a * d + b * c
     local z = Node(real, imag)
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real * c, dz_imag * d)
-        y:backward(dz_real * a, dz_imag * b)
-    end
+    z.grad_fn = generic_mul_grad
+    z.left = x
+    z.right = y
     return z
 end
 
--- 나눗셈 노드 생성 x/y
+-- 나눗셈
 Node.__div = function(x, y)
     x, y = Node.convertToNode(x, y)
-    local a = x.value.real
-    local b = x.value.imag
-    local c = y.value.real
-    local d = y.value.imag
-
-    local real = (a * c + b * d) / (c^2 + d^2)
-    local imag = (b * c - a * d) / (c^2 + d^2)
-    local z = Node(real, imag) 
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real * (c) / (c^2 + d^2), dz_imag * -(d) / (c^2 + d^2))
-        y:backward(dz_real * -a * (c^2 - d^2) / ((c^2 - d^2)^2 + 4 * c^2 * d^2), dz_imag * -(b * (c^2 - d^2)) / ((c^2 - d^2)^2 + 4 * c^2 * d^2))
-    end
+    local a, b = x.value.real, x.value.imag
+    local c, d = y.value.real, y.value.imag
+    local denom = c^2 + d^2
+    local real = (a * c + b * d) / denom
+    local imag = (b * c - a * d) / denom
+    local z = Node(real, imag)
+    z.grad_fn = generic_div_grad
+    z.left = x
+    z.right = y
     return z
 end
 
-Node.__unm = function(self)
-    return -1 * self
+-- 단항 마이너스 (음수)
+Node.__unm = function(x)
+    return -1 * x
 end
 
--- 로그 노드 생성 log_y_(x)
+-- 지수: x^y
+Node.__pow = function(x, y)
+    x, y = Node.convertToNode(x, y)
+
+    local real = x.value.real^y.value.real
+    local z = Node(real, 0)
+    z.grad_fn = generic_pow_grad
+    z.child = x
+    z.exponent = y
+    return z
+end
+
+-- 로그: log_y_(x)
 function Node.log(x, y)
     y = y or Node(math.exp(1))
     x, y = Node.convertToNode(x, y)
@@ -184,52 +252,48 @@ function Node.log(x, y)
     local real = math.log(x.value.real, y.value.real)
 
     local z = Node(real, 0)
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real * (1 / (x.value.real * math.log(y.value.real))))
-        y:backward(dz_real * -(math.log(x.value.real) / (y.value.real * math.log(y.value.real)^2)))
-    end
+    z.grad_fn = generic_log_grad
+    z.left = x
+    z.right = y
     return z
 end
 
--- 지수 노드 생성: x^y
-Node.__pow = function(x, y)
-    x, y = Node.convertToNode(x, y)
-
-    local real = x.value.real^y.value.real
-    local z = Node(real, 0)
-    z.grad_fn = function(dz_real, dz_imag)
-        x:backward(dz_real * y.value.real * x.value.real^(y.value.real - 1))
-        y:backward(dz_real * x.value.real^y.value.real * math.log(x.value.real))
+-- 지수: y = exp(x)
+function Node.exp(x)
+    if getmetatable(x) ~= Node then
+        x = Node(x)
     end
-    return z
+    local out = Node(math.exp(x.value.real), 0)
+    out.grad_fn = generic_exp_grad
+    out.child = x
+    return out
 end
 
---#endregion
-
---#region Node 비연산 구현부
-
--- 역전파 함수
-function Node:backward(dz_real, dz_imag)
-    local dz_real = dz_real or 1
-    local dz_imag = dz_imag or 1
-    self.grad.real = self.grad.real + dz_real
-    self.grad.imag = self.grad.imag + dz_imag
-    if self.grad_fn then
-        self.grad_fn(dz_real, dz_imag)
+-- 사인: y = sin(x)
+function Node.sin(x)
+    if getmetatable(x) ~= Node then
+        x = Node(x)
     end
+    local out = Node(math.sin(x.value.real), 0)
+    out.grad_fn = generic_sin_grad
+    out.child = x
+    return out
 end
 
--- 숫자라면 Node로 변경
-function Node.convertToNode(...)
-    local args = {...}
-    for key, arg in pairs(args) do
-        if type(arg) == "number" then 
-            args[key] = Node(arg) 
-        end
+-- 코사인: y = cos(x)
+function Node.cos(x)
+    if getmetatable(x) ~= Node then
+        x = Node(x)
     end
-    return unpack(args)
+    local out = Node(math.cos(x.value.real), 0)
+    out.grad_fn = generic_cos_grad
+    out.child = x
+    return out
 end
 
---#endregion
+-- 노드의 value와 grad를 보기 좋게 출력하는 함수
+local function print_node(n, label)
+    print(string.format("%s -> value: %s, grad: %s", label, tostring(n.value), tostring(n.grad)))
+end
 
 return Node
