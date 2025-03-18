@@ -296,4 +296,77 @@ local function print_node(n, label)
     print(string.format("%s -> value: %s, grad: %s", label, tostring(n.value), tostring(n.grad)))
 end
 
+-- 반복문 기반 역전파 함수: backward_iterative
+function Node:backward_iterative(dz_real, dz_imag)
+    dz_real = dz_real or 1
+    dz_imag = dz_imag or 1
+    local stack = {}
+    -- 초기 노드와 미분값을 스택에 넣음
+    table.insert(stack, {node = self, dz_real = dz_real, dz_imag = dz_imag})
+    
+    while #stack > 0 do
+        local item = table.remove(stack)
+        local node = item.node
+        local dzr = item.dz_real
+        local dzi = item.dz_imag
+        
+        -- 현재 노드의 기울기를 업데이트
+        node.grad.real = node.grad.real + dzr
+        node.grad.imag = node.grad.imag + dzi
+        
+        -- 기울기 함수가 있다면, 해당 노드의 종류에 따라 자식 노드에 미분값을 전파
+        if node.grad_fn then
+            if node.grad_fn == generic_add_grad then
+                -- 덧셈: 미분값을 그대로 양쪽에 전파
+                table.insert(stack, {node = node.left, dz_real = dzr, dz_imag = dzi})
+                table.insert(stack, {node = node.right, dz_real = dzr, dz_imag = dzi})
+            elseif node.grad_fn == generic_sub_grad then
+                -- 뺄셈: 오른쪽에는 음수를 전파
+                table.insert(stack, {node = node.left, dz_real = dzr, dz_imag = dzi})
+                table.insert(stack, {node = node.right, dz_real = -dzr, dz_imag = -dzi})
+            elseif node.grad_fn == generic_mul_grad then
+                -- 곱셈: 각각 상대 노드의 값으로 곱해진 미분값을 전파
+                table.insert(stack, {node = node.left, dz_real = dzr * node.right.value.real, dz_imag = dzi * node.right.value.imag})
+                table.insert(stack, {node = node.right, dz_real = dzr * node.left.value.real, dz_imag = dzi * node.left.value.imag})
+            elseif node.grad_fn == generic_div_grad then
+                -- 나눗셈: 단순화된 형태의 미분 계산
+                local left = node.left
+                local right = node.right
+                local a, b = left.value.real, left.value.imag
+                local c, d = right.value.real, right.value.imag
+                local denom = c^2 + d^2
+                table.insert(stack, {node = left, dz_real = dzr * c / denom, dz_imag = dzi * -d / denom})
+                local denom2 = (c^2 - d^2)^2 + 4 * c^2 * d^2
+                table.insert(stack, {node = right, dz_real = dzr * -a * (c^2 - d^2) / denom2, dz_imag = dzi * -b * (c^2 - d^2) / denom2})
+            elseif node.grad_fn == generic_exp_grad then
+                -- 지수 함수: exp(x)의 미분은 exp(x)
+                table.insert(stack, {node = node.child, dz_real = dzr * node.value.real, dz_imag = dzi * node.value.real})
+            elseif node.grad_fn == generic_log_grad then
+                -- 로그 함수: 단순화된 형태
+                local left = node.left
+                local right = node.right
+                table.insert(stack, {node = left, dz_real = dzr * (1 / (left.value.real * math.log(right.value.real))), dz_imag = 0})
+                table.insert(stack, {node = right, dz_real = dzr * -(math.log(left.value.real) / (right.value.real * math.log(right.value.real)^2)), dz_imag = 0})
+            elseif node.grad_fn == generic_pow_grad then
+                -- 거듭제곱 함수: 미분값 전파
+                local child = node.child
+                local exponent = node.exponent
+                table.insert(stack, {node = child, dz_real = dzr * exponent.value.real * child.value.real^(exponent.value.real - 1), dz_imag = dzi})
+                table.insert(stack, {node = exponent, dz_real = dzr * child.value.real^exponent.value.real * math.log(child.value.real), dz_imag = 0})
+            elseif node.grad_fn == generic_sin_grad then
+                -- 사인 함수: 미분은 cos(x)
+                table.insert(stack, {node = node.child, dz_real = dzr * math.cos(node.child.value.real), dz_imag = dzi * math.cos(node.child.value.real)})
+            elseif node.grad_fn == generic_cos_grad then
+                -- 코사인 함수: 미분은 -sin(x)
+                table.insert(stack, {node = node.child, dz_real = -dzr * math.sin(node.child.value.real), dz_imag = -dzi * math.sin(node.child.value.real)})
+            end
+        end
+    end
+end
+
+local a = Node(2)
+local b = Node(4)
+local c = a / b
+c:backward_iterative()
+
 return Node

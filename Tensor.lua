@@ -731,6 +731,7 @@ function Tensor:backward(dz_real, dz_imag)
                 traverse(v)  -- 하위 테이블을 재귀적으로 순회
             else
                 v:backward(dz_real, dz_imag)
+                --v:backward_iterative(dz_real, dz_imag)
             end
         end
     end
