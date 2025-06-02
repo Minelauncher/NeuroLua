@@ -37,7 +37,7 @@ local Node = {}
 Node.__index = Node
 
 -- Node 생성자: 기본 값, 허수부, 기울기 함수(옵션) 설정
-function Node.new(real, imag, grad_fn)
+function Node.new(real, imag, grad_fn, requires_grad)
     local self = setmetatable({}, Node)
     
     self.value = {real = real or 0, imag = imag or 0}
@@ -48,14 +48,15 @@ function Node.new(real, imag, grad_fn)
     
     self.grad_fn = grad_fn or nil  -- 역전파 시 호출할 기울기 함수
     self.parents = {}               -- 부모 노드 리스트 (필요 시 사용)
+    self.requires_grad = (requires_grad ~= false)  -- nil 이나 true → 추적
     
     return self
 end
 
 -- Node 호출 시 Node.new를 대신 호출 (객체 선언 방식 변경)
 setmetatable(Node, {
-    __call = function(self, real, imag, grad_fn)
-        return Node.new(real, imag, grad_fn)
+    __call = function(self, real, imag, grad_fn, requires_grad)
+        return Node.new(real, imag, grad_fn, requires_grad)
     end
 })
 
@@ -82,6 +83,7 @@ end
 
 -- backward 메소드: 역전파 시 기울기 함수 호출
 function Node:backward(dz_real, dz_imag)
+    if not self.requires_grad then return end  -- detach 된 노드는 스킵
     local dz_real = dz_real or 1
     local dz_imag = dz_imag or 1
     self.grad.real = self.grad.real + dz_real
@@ -90,6 +92,20 @@ function Node:backward(dz_real, dz_imag)
         -- 미리 정의된 기울기 함수에 현재 노드와 미분값을 전달
         self.grad_fn(self, dz_real, dz_imag)
     end
+end
+
+-- 분리 메서드 추가
+function Node:detach()
+    -- leaf 복사본을 만들어 반환
+    return Node(self.value.real, self.value.imag, nil, false)
+end
+
+function Node:detach_()
+    -- 제자리 분리: 이후 이 노드로부터 gradient 전파 금지
+    self.grad_fn       = nil
+    self.parents       = {}
+    self.requires_grad = false
+    return self
 end
 
 -- convertToNode: 인자가 Node가 아니면 즉석에서 변환
@@ -181,9 +197,15 @@ Node.__add = function(x, y)
     x, y = Node.convertToNode(x, y)
     local sum = x.value.real + y.value.real  -- 허수부는 단순히 0으로 처리 (필요에 따라 확장 가능)
     local z = Node(sum, 0)
-    z.grad_fn = generic_add_grad
-    z.left = x
-    z.right = y
+    
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_add_grad
+        z.left, z.right = x, y
+        z.requires_grad = true
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -192,9 +214,15 @@ Node.__sub = function(x, y)
     x, y = Node.convertToNode(x, y)
     local diff = x.value.real - y.value.real
     local z = Node(diff, 0)
-    z.grad_fn = generic_sub_grad
-    z.left = x
-    z.right = y
+
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_sub_grad
+        z.left = x
+        z.right = y
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -206,9 +234,15 @@ Node.__mul = function(x, y)
     local real = a * c - b * d
     local imag = a * d + b * c
     local z = Node(real, imag)
-    z.grad_fn = generic_mul_grad
-    z.left = x
-    z.right = y
+    
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_mul_grad
+        z.left = x
+        z.right = y
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -221,9 +255,15 @@ Node.__div = function(x, y)
     local real = (a * c + b * d) / denom
     local imag = (b * c - a * d) / denom
     local z = Node(real, imag)
-    z.grad_fn = generic_div_grad
-    z.left = x
-    z.right = y
+    
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_div_grad
+        z.left = x
+        z.right = y
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -238,9 +278,15 @@ Node.__pow = function(x, y)
 
     local real = x.value.real^y.value.real
     local z = Node(real, 0)
-    z.grad_fn = generic_pow_grad
-    z.child = x
-    z.exponent = y
+
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_pow_grad
+        z.child = x
+        z.exponent = y
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -252,9 +298,15 @@ function Node.log(x, y)
     local real = math.log(x.value.real, y.value.real)
 
     local z = Node(real, 0)
-    z.grad_fn = generic_log_grad
-    z.left = x
-    z.right = y
+
+    if x.requires_grad or y.requires_grad then
+        z.grad_fn = generic_log_grad
+        z.left = x
+        z.right = y
+    else
+        -- 둘 다 require_grad=false 면 grad_fn 자체를 남기지 않음
+        z.requires_grad = false
+    end
     return z
 end
 
@@ -264,8 +316,14 @@ function Node.exp(x)
         x = Node(x)
     end
     local out = Node(math.exp(x.value.real), 0)
-    out.grad_fn = generic_exp_grad
-    out.child = x
+
+    if x.requires_grad then
+        out.grad_fn = generic_exp_grad
+        out.child = x
+    else
+        -- require_grad=false 면 grad_fn 자체를 남기지 않음
+        out.requires_grad = false
+    end
     return out
 end
 
@@ -275,8 +333,14 @@ function Node.sin(x)
         x = Node(x)
     end
     local out = Node(math.sin(x.value.real), 0)
-    out.grad_fn = generic_sin_grad
-    out.child = x
+
+    if x.requires_grad then
+        out.grad_fn = generic_sin_grad
+        out.child = x
+    else
+        -- require_grad=false 면 grad_fn 자체를 남기지 않음
+        out.requires_grad = false
+    end
     return out
 end
 
@@ -286,8 +350,14 @@ function Node.cos(x)
         x = Node(x)
     end
     local out = Node(math.cos(x.value.real), 0)
-    out.grad_fn = generic_cos_grad
-    out.child = x
+
+    if x.requires_grad then
+        out.grad_fn = generic_cos_grad
+        out.child = x
+    else
+        -- require_grad=false 면 grad_fn 자체를 남기지 않음
+        out.requires_grad = false
+    end
     return out
 end
 
@@ -363,10 +433,5 @@ function Node:backward_iterative(dz_real, dz_imag)
         end
     end
 end
-
-local a = Node(2)
-local b = Node(4)
-local c = a / b
-c:backward_iterative()
 
 return Node

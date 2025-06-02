@@ -1,7 +1,29 @@
 Node = require("Node")
 
 Tensor = {}
---Tensor.__index = Tensor
+
+local size_mt = {
+    __eq = function(a, b)
+    if #a ~= #b then
+        return false
+    end
+    for i = 1, #a do
+        if a[i] ~= b[i] then
+        return false
+        end
+    end
+    return true
+    end,
+
+    __tostring = function(tbl)
+    -- tbl[i]들을 문자열로 모아서 "[1, 2, 3]" 같은 형식으로
+    local parts = {}
+    for i = 1, #tbl do
+        parts[#parts + 1] = tostring(tbl[i])
+    end
+    return "[" .. table.concat(parts, ", ") .. "]"
+    end
+}
 
 -- Tensor 생성
 function Tensor.new(values)
@@ -10,20 +32,7 @@ function Tensor.new(values)
 
     self.dimension = 0--Tensor의 차원
     self.size = {}--Tensor의 크기
-    self.size = setmetatable(self.size, {
-        __eq = function(a, b) -- 동등
-            if #a == #b then
-                for i = 1, #a do
-                    if a[i] ~= b[i] then
-                        return false
-                    end
-                end
-                return true
-            else
-                return false
-            end
-        end
-    })
+    self.size = setmetatable(self.size, size_mt)
 
     local function tableToNode(table, dimension)
         for i, v in pairs(table) do
@@ -343,21 +352,82 @@ function Tensor:adjugate()
 
     return Tensor(adjugate):transpose()  -- 여인수 행렬의 전치 행렬을 반환
 end
--- 역행렬 계산(정사각 행렬만 가능, 행렬식 0 아니여야함)
+
+-- LU 분해(부분 피벗 포함)를 수행하여 LU 결합 행렬과 피벗 순열을 반환
+function Tensor:luDecompose()
+    assert(self.dimension == 2, "Matrix must be 2D")
+    local n = #self.values
+    -- 원본 변경 방지를 위해 깊은 복사
+    local luTensor = Tensor.deepcopy(self)
+    local lu = luTensor.values
+    -- 피벗 순열 초기화
+    local P = {}
+    for i = 1, n do P[i] = i end
+
+    for k = 1, n do
+        -- 피벗 선택: k번째 열에서 절댓값 최대 행 탐색
+        local maxRow, maxVal = k, math.abs(lu[k][k].value and lu[k][k].value.real or lu[k][k])
+        for i = k + 1, n do
+            local v = math.abs(lu[i][k].value and lu[i][k].value.real or lu[i][k])
+            if v > maxVal then maxVal, maxRow = v, i end
+        end
+        assert(maxVal > 0, "Singular matrix")
+        -- 행 교환
+        if maxRow ~= k then
+            lu[k], lu[maxRow] = lu[maxRow], lu[k]
+            P[k], P[maxRow] = P[maxRow], P[k]
+        end
+        -- L, U 계산
+        for i = k + 1, n do
+            local factor = lu[i][k] / lu[k][k]
+            lu[i][k] = factor
+            for j = k + 1, n do
+                lu[i][j] = lu[i][j] - factor * lu[k][j]
+            end
+        end
+    end
+
+    return luTensor, P
+end
+
+-- 내부 헬퍼: LU 해 풀기(forward/backward substitution)
+local function solveLU(luTensor, P, b)
+    local n = #luTensor.values
+    local lu = luTensor.values
+    -- 순열 적용
+    local pb = {}
+    for i = 1, n do pb[i] = b[P[i]] end
+    -- 전진 대입 L*y = pb
+    local y = {}
+    for i = 1, n do
+        local sum = Node(0)
+        for j = 1, i - 1 do sum = sum + lu[i][j] * y[j] end
+        y[i] = pb[i] - sum
+    end
+    -- 후진 대입 U*x = y
+    local x = {}
+    for i = n, 1, -1 do
+        local sum = Node(0)
+        for j = i + 1, n do sum = sum + lu[i][j] * x[j] end
+        x[i] = (y[i] - sum) / lu[i][i]
+    end
+    return x
+end
+
+-- LU 분해를 이용한 역행렬 계산
 function Tensor:inverse()
-    if not Tensor.isMatrix(self) then
-        return
+    assert(self.dimension == 2, "Matrix must be 2D")
+    local n = #self.values
+    local luTensor, P = self:luDecompose()
+    local inv = Tensor.emptyTensor({n, n})
+    for j = 1, n do
+        -- 단위벡터 생성
+        local b = {}
+        for i = 1, n do b[i] = (i == j) and Node(1) or Node(0) end
+        local x = solveLU(luTensor, P, b)
+        for i = 1, n do inv.values[i][j] = x[i] end
     end
-
-    local inverseMatrix = Tensor.deepcopy(self)
-    local det = inverseMatrix:determinant()--Node
-
-    if #inverseMatrix.values ~= 1 then
-        local adjugate = inverseMatrix:adjugate()--Tensor
-        return adjugate * (1 / det.value.real)
-    else
-        return (1 / det.value.real)
-    end
+    return inv
 end
 
 -- N*N크기의 이산 푸리에 변환 행렬 생성(1차원 이산 푸리에 변환)
@@ -373,6 +443,221 @@ function Tensor.DFT(N)
         end
     end
     return Tensor(matrixDFT)
+end
+
+function Tensor:blockHankel(window_size)
+    Tensor.isMatrix(self) -- 2차원인지 확인
+
+    local T = self.size[1] -- 총 시점 수
+    local d = self.size[2] -- 변수 수
+    local block_rows = window_size * d
+    local block_cols = T - window_size + 1
+
+    local hankel = {}
+    for i = 1, block_rows do
+        hankel[i] = {}
+        for j = 1, block_cols do
+            hankel[i][j] = Node(0)
+        end
+    end
+
+    for col = 1, block_cols do
+        for t = 1, window_size do
+            local row_offset = (t - 1) * d
+            for var = 1, d do
+                local row = row_offset + var
+                hankel[row][col] = self.values[col + t - 1][var]
+            end
+        end
+    end
+
+    -- 열은 윈도우 크기 시간만큼의 특성차원 묶음
+    return Tensor(hankel)
+end
+
+-- 정규화된 leastSquares 함수 예시
+function Tensor.leastSquares(Y, Phi, lambda)
+    Tensor.isMatrix(Y) -- size: (n × N)
+    Tensor.isMatrix(Phi) -- size: ((n + m) × N)
+    lambda = lambda or 1e-6
+    Y = Y:detach()
+    Phi = Phi:detach()
+
+    local Phi_T = Phi:transpose()
+    local Phi_PhiT = Tensor.dot(Phi, Phi_T)
+    local I = Tensor.emptyTensor(Phi_PhiT.size):fill(0)
+    for i = 1, #I.values do
+        I.values[i][i] = Node(lambda)
+    end
+    local regularized = Phi_PhiT + I
+    local inv = regularized:inverse()
+    return Tensor.dot(Tensor.dot(Y, Phi_T), inv)
+end
+
+function Tensor.subspaceID(U, Y, r, window)
+    Tensor.isMatrix(U)
+    Tensor.isMatrix(Y)
+
+    -- 블록 행렬 생성
+    local Y_p = Y:blockHankel(window)
+    local Y_f = Y:blockHankel(window):slice({r+1,1}, {Y:blockHankel(window).size[1], Y:blockHankel(window).size[2]})
+    local U_p = U:blockHankel(window)
+    
+    -- 상태 X_t 를 Y_p 의 앞 r행만 사용 (SVD 생략 버전)
+    local X_t = Y_p:slice({1,1}, {r, Y_p.size[2]})            -- (r × N)
+    local X_tp1 = Y_f:slice({1,1}, {r, Y_f.size[2]})           -- (r × N)
+    local U_cut = U_p:slice({1,1}, {U_p.size[1], X_t.size[2]}) -- (m×window) × N
+
+    -- XU = [X_t; U_cut]
+    local XU = Tensor.concat(X_t, U_cut, 1)
+
+    -- AB = [A | B]
+    local AB = Tensor.leastSquares(X_tp1, XU)
+
+    -- CD = [C | D]
+    local CD = Tensor.leastSquares(Y_p, XU)
+
+    return AB, CD
+end
+
+-- Jacobi 고유값 분해 (대칭행렬용)
+-- 입력: self = 대칭 Tensor (n x n)
+-- 출력: eigenvalues (1D Tensor), eigenvectors (n x n Tensor)
+
+function Tensor:eigJacobi(eps, max_iter)
+    eps = eps or 1e-10
+    max_iter = max_iter or 100
+    local n = #self.values
+
+    -- 초기화
+    local A = Tensor.deepcopy(self)             -- A: 작업용 복사본
+    local V = Tensor.emptyTensor({n, n}, 0)     -- 고유벡터 초기값: 단위행렬
+    for i = 1, n do V.values[i][i] = Node(1) end
+
+    for iter = 1, max_iter do
+        -- 최대 오프대각 원소 찾기
+        local max_val, p, q = 0, 1, 2
+        for i = 1, n-1 do
+            for j = i+1, n do
+                local aij = math.abs(A.values[i][j].value.real)
+                if aij > max_val then
+                    max_val = aij
+                    p, q = i, j
+                end
+            end
+        end
+
+        if max_val < eps then break end  -- 수렴 조건
+
+        local app = A.values[p][p].value.real
+        local aqq = A.values[q][q].value.real
+        local apq = A.values[p][q].value.real
+
+        local theta = 0.5 * math.atan2(2 * apq, aqq - app)
+        local c = math.cos(theta)
+        local s = math.sin(theta)
+
+        -- 회전 적용
+        for i = 1, n do
+            local aip = A.values[i][p]
+            local aiq = A.values[i][q]
+            A.values[i][p] = c * aip - s * aiq
+            A.values[i][q] = s * aip + c * aiq
+        end
+        for i = 1, n do
+            local api = A.values[p][i]
+            local aqi = A.values[q][i]
+            A.values[p][i] = c * api - s * aqi
+            A.values[q][i] = s * api + c * aqi
+        end
+
+        -- 대각 원소 갱신
+        local new_app = c*c*app - 2*s*c*apq + s*s*aqq
+        local new_aqq = s*s*app + 2*s*c*apq + c*c*aqq
+        A.values[p][p] = Node(new_app)
+        A.values[q][q] = Node(new_aqq)
+        A.values[p][q] = Node(0)
+        A.values[q][p] = Node(0)
+
+        -- 고유벡터 갱신
+        for i = 1, n do
+            local vip = V.values[i][p]
+            local viq = V.values[i][q]
+            V.values[i][p] = c * vip - s * viq
+            V.values[i][q] = s * vip + c * viq
+        end
+    end
+
+    -- 고유값 추출 (대각 성분)
+    local eigvals = {}
+    for i = 1, n do
+        eigvals[i] = A.values[i][i]
+    end
+    return Tensor({eigvals}), V
+end
+
+-- SVD 기반 상태 추정 포함 서브스페이스 식별
+function Tensor.subspaceID_SVD(U, Y, r, window)
+    -- Step 1: blockHankel
+    local Y_f = Y:blockHankel(window)
+
+    -- Step 2: A = Yf^T * Yf
+    local Y_f_T = Y_f:transpose()
+    local A = Tensor.dot(Y_f_T, Y_f)
+
+    -- Step 3: eig(A) → V, Lambda
+    local S_squared, V = A:eigJacobi(1e-8, 100)
+
+    -- Step 4: Sigma = sqrt(S_squared), keep top r
+    local sigma_values = {}
+    for i = 1, r do
+        local raw_val = S_squared.values[1][i].value.real
+        if raw_val < 1e-8 then raw_val = 1e-8 end
+        sigma_values[i] = Node(math.sqrt(raw_val))
+    end
+    local Sigma_r = Tensor.emptyTensor({r, r}, 0)
+    for i = 1, r do
+        Sigma_r.values[i][i] = sigma_values[i]  -- Node 타입
+    end
+
+    -- Step 5: X_t = Sigma_r * V_r^T
+    local V_r = {}
+    for i = 1, #V.values do
+        V_r[i] = {}
+        for j = 1, r do
+            V_r[i][j] = V.values[i][j]
+        end
+    end
+    local V_r_T = Tensor(V_r):transpose()
+
+    local X_t = Tensor.dot(Sigma_r, V_r_T)
+
+    -- Step 6: 미래 상태용 X_t+1 = X_t[:,2:] 등 필요시 자를 것
+    local X_tp1 = X_t:slice({1,2}, {X_t.size[1], X_t.size[2]})
+    local X_now = X_t:slice({1,1}, {X_t.size[1], X_t.size[2]-1})
+
+    -- Step 7: blockHankel for U, Y (맞춰 자르기)
+    local U_p = U:blockHankel(window):slice({1,1}, {U:blockHankel(window).size[1], X_now.size[2]})
+    local Y_p = Y:blockHankel(window):slice({1,1}, {Y:blockHankel(window).size[1], X_now.size[2]})
+
+    local XU = Tensor.concat(X_now, U_p, 1)
+
+    local AB = Tensor.leastSquares(X_tp1, XU)
+    local CD = Tensor.leastSquares(Y_p, XU)
+
+    -- AB, CD 크기 분해 계산
+    local AB_cols = AB.size[2]
+    local CD_cols = CD.size[2]
+
+    -- AB 쪼개기
+    local A = AB:slice({1,1}, {r, r})
+    local B = AB:slice({1, r+1}, {r, AB_cols})
+
+    -- CD 쪼개기
+    local C = CD:slice({1,1}, {CD.size[1], r})
+    local D = CD:slice({1, r+1}, {CD.size[1], CD_cols})
+
+    return A, B, C, D
 end
 
 --#endregion
@@ -721,6 +1006,26 @@ function Tensor.emptyTensor(size, initial)
     return Tensor(create(size, 1))
 end
 
+function Tensor:backwardTensor(gradiantTensor)
+    -- 현재 텐서와 크기가 같다고 가정하는 그라디언트 텐서
+    local gradiantTensor = gradiantTensor or Tensor.emptyTensor(self.size, 1)
+
+    local function traverse(table, gradiantTable)
+        for t, gt in zip(table, gradiantTable) do
+            local t_isNotNode = (getmetatable(t) ~= Node and type(t) == "table")
+            local gt_isNotNode = (getmetatable(gt) ~= Node and type(gt) == "table")
+            if t_isNotNode and gt_isNotNode then
+                traverse(t, gt)  -- 하위 테이블을 재귀적으로 순회
+            else
+                t:backward(gt.value.real, gt.value.imag)
+                --t:backward_iterative(gt.value.real, gt.value.imag)
+            end
+        end
+    end
+    traverse(self.values, gradiantTensor.values)
+    return true
+end
+
 -- 특정 Tensor 기준으로 자동 미분
 function Tensor:backward(dz_real, dz_imag)
     local dz_real = dz_real or 1
@@ -758,6 +1063,39 @@ function Tensor:grad()
     end
     local gradiantTensor = grad(self.values, self.size, 1)
     return Tensor(gradiantTensor)
+end
+
+-- 새 텐서(leaf 노드 복사본) 반환
+function Tensor:detach()
+    local function cloneDet(t)
+        local out = {}
+        for k,v in pairs(t) do
+            if getmetatable(v) == Node then           
+                out[k] = v:detach()
+            elseif type(v) == "table" then            
+                out[k] = cloneDet(v)
+            else                                      
+                out[k] = v
+            end
+        end
+        return out
+    end
+    return Tensor(cloneDet(self.values))
+end
+
+-- 제자리(in-place) detach
+function Tensor:detach_()
+    local function inplaceDet(t)
+        for k,v in pairs(t) do
+            if getmetatable(v) == Node then           
+                v:detach_()
+            elseif type(v) == "table" then            
+                inplaceDet(v)
+            end
+        end
+    end
+    inplaceDet(self.values)
+    return self
 end
 --#endregion
 
