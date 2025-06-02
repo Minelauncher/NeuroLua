@@ -114,3 +114,7 @@ end
 
 cnn:summary()
 ```
+
+96%의 분류성능을 보임.
+![image](https://github.com/user-attachments/assets/96a16f21-cb75-466f-b0b2-f4e6ba547ec3)
+
